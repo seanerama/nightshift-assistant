@@ -62,7 +62,7 @@ describe('job runner', () => {
       jobKillGraceSec: 1,
       ...overrides,
     });
-    const runner = createJobRunner(db, log, config, { appDir: tmpDir });
+    const runner = createJobRunner(db, log, config, { appDir: tmpDir, home: tmpDir });
     runner.onFinish((job, notice) => {
       notices.push({ job, notice });
     });
@@ -437,6 +437,195 @@ describe('job runner', () => {
           else process.env[key] = value;
         }
       }
+    });
+  });
+
+  describe('job-type registry spawns (Stage 6)', () => {
+    const readJson = (path: string): Record<string, string> =>
+      JSON.parse(readFileSync(path, 'utf8')) as Record<string, string>;
+
+    const BASE_ALLOWED = new Set([
+      'PATH',
+      'HOME',
+      'USER',
+      'SHELL',
+      'LANG',
+      'TERM',
+      'ANTHROPIC_API_KEY',
+      'CLAUDE_CODE_OAUTH_TOKEN',
+    ]);
+
+    /** Set env vars for a test and restore afterwards. */
+    const withEnv = async (
+      vars: Record<string, string>,
+      body: () => Promise<void>,
+    ): Promise<void> => {
+      const saved: Record<string, string | undefined> = {};
+      for (const [key, value] of Object.entries(vars)) {
+        saved[key] = process.env[key];
+        process.env[key] = value;
+      }
+      try {
+        await body();
+      } finally {
+        for (const [key, value] of Object.entries(saved)) {
+          if (value === undefined) delete process.env[key];
+          else process.env[key] = value;
+        }
+      }
+    };
+
+    it('a typed story worker spawns with the pipeline profile AFTER the base argv', async () => {
+      const runner = makeRunner({ typesEnabled: true });
+      const record = runner.submitType('story', { idea: 'MODE=dump-args turtles' });
+
+      expect(record.type).toBe('story');
+      expect(record.title).toBe('Story: MODE=dump-args turtles');
+      expect(record.workdir).toBe(join(tmpDir, 'projects', 'mode-dump-args-turtles'));
+      await waitFor(() => runner.get(record.id)?.status === 'succeeded');
+
+      const args = JSON.parse(
+        readFileSync(join(record.workdir, 'worker-args.json'), 'utf8'),
+      ) as string[];
+      // Base argv first (the -p prompt is the rendered skill instruction)…
+      expect(args[0]).toBe('-p');
+      expect(args[1]).toContain('/story:start MODE=dump-args turtles');
+      expect(args[2]).toBe('--session-id');
+      // …then the registry permission args (NEVER before -p: --allowedTools is
+      // variadic and would swallow a following prompt — CLI v2.1.201 verified).
+      expect(args.indexOf('--permission-mode')).toBeGreaterThan(args.indexOf('--session-id'));
+      expect(args[args.indexOf('--permission-mode') + 1]).toBe('acceptEdits');
+      const allowed = args[args.indexOf('--allowedTools') + 1] ?? '';
+      expect(allowed).toContain('Bash(node *)');
+      expect(allowed).toContain('Bash(ffmpeg *)');
+      expect(allowed.split(' ')).not.toContain('Bash'); // never wholesale
+    });
+
+    it('an app-build worker spawns with the broadest (experimental) profile', async () => {
+      const runner = makeRunner({ typesEnabled: true });
+      const record = runner.submitType('app-build', { idea: 'MODE=dump-args tracker' });
+      await waitFor(() => runner.get(record.id)?.status === 'succeeded');
+
+      const args = JSON.parse(
+        readFileSync(join(record.workdir, 'worker-args.json'), 'utf8'),
+      ) as string[];
+      expect(args).toContain('--permission-mode');
+      expect(args[args.indexOf('--permission-mode') + 1]).toBe('bypassPermissions');
+    });
+
+    it('a story worker env = allow-list + the story extras and NOTHING else', () =>
+      withEnv(
+        {
+          ELEVENLABS_API_KEY: 'tts-key',
+          GEMINI_API_KEY: 'img-key',
+          PERPLEXITY_API_KEY: 'pplx-key', // declared for study/brief, NOT story
+          WEBEX_BOT_TOKEN: 'live-secret',
+          NIGHTSHIFT_API_TOKEN: 'live-token',
+        },
+        async () => {
+          const runner = makeRunner({ typesEnabled: true });
+          const record = runner.submitType('story', { idea: 'MODE=dump-env turtles' });
+          await waitFor(() => runner.get(record.id)?.status === 'succeeded');
+
+          const dumped = readJson(join(record.workdir, 'worker-env.json'));
+          expect(dumped.ELEVENLABS_API_KEY).toBe('tts-key');
+          expect(dumped.GEMINI_API_KEY).toBe('img-key');
+          expect(dumped.PERPLEXITY_API_KEY).toBeUndefined(); // not a story extra
+          expect(dumped.WEBEX_BOT_TOKEN).toBeUndefined();
+          expect(dumped.NIGHTSHIFT_API_TOKEN).toBeUndefined();
+          const storyAllowed = new Set([
+            ...BASE_ALLOWED,
+            'ELEVENLABS_API_KEY',
+            'OPENAI_API_KEY',
+            'GEMINI_API_KEY',
+            'GOOGLE_API_KEY',
+            'NANOBANANA_API_KEY',
+          ]);
+          for (const key of Object.keys(dumped)) {
+            expect(storyAllowed.has(key), `unexpected env var reached the worker: ${key}`).toBe(
+              true,
+            );
+          }
+        },
+      ));
+
+    it('a study worker gets ONLY its own declared extras (no story keys)', () =>
+      withEnv({ ELEVENLABS_API_KEY: 'tts-key', PERPLEXITY_API_KEY: 'pplx-key' }, async () => {
+        const runner = makeRunner({ typesEnabled: true });
+        const record = runner.submitType('study', { topic: 'MODE=dump-env networking' });
+        await waitFor(() => runner.get(record.id)?.status === 'succeeded');
+
+        const dumped = readJson(join(record.workdir, 'worker-env.json'));
+        expect(dumped.PERPLEXITY_API_KEY).toBe('pplx-key');
+        expect(dumped.ELEVENLABS_API_KEY).toBeUndefined();
+        const studyAllowed = new Set([...BASE_ALLOWED, 'PERPLEXITY_API_KEY']);
+        for (const key of Object.keys(dumped)) {
+          expect(studyAllowed.has(key), `unexpected env var reached the worker: ${key}`).toBe(true);
+        }
+      }));
+
+    it('a RAW submit stays byte-identical to Stage 5 even with the registry ENABLED', () =>
+      withEnv({ ELEVENLABS_API_KEY: 'tts-key', PERPLEXITY_API_KEY: 'pplx-key' }, async () => {
+        const runner = makeRunner({ typesEnabled: true });
+        const record = submit(runner, 'MODE=dump-args plain worker');
+        await waitFor(() => runner.get(record.id)?.status === 'succeeded');
+
+        // Exactly the Stage 5 argv: -p <prompt> --session-id <uuid> — nothing more.
+        const args = JSON.parse(
+          readFileSync(join(workdir, 'worker-args.json'), 'utf8'),
+        ) as string[];
+        expect(args).toHaveLength(4);
+        expect(args[0]).toBe('-p');
+        expect(args[2]).toBe('--session-id');
+
+        const envRecord = submit(runner, 'MODE=dump-env plain worker');
+        await waitFor(() => runner.get(envRecord.id)?.status === 'succeeded');
+        const dumped = readJson(join(workdir, 'worker-env.json'));
+        for (const key of Object.keys(dumped)) {
+          expect(BASE_ALLOWED.has(key), `raw worker env grew a key: ${key}`).toBe(true);
+        }
+      }));
+
+    it('kill-switch: non-generic submits reject while OFF; generic + raw are unaffected', async () => {
+      const runner = makeRunner({ typesEnabled: false });
+      expect(() => runner.submitType('story', { idea: 'bedtime' })).toThrow(
+        /job type 'story' is disabled.*NIGHTSHIFT_TYPES_ENABLED/,
+      );
+      expect(runner.list()).toHaveLength(0);
+
+      const generic = runner.submitType('generic', { instruction: 'MODE=success', workdir });
+      await waitFor(() => runner.get(generic.id)?.status === 'succeeded');
+      const raw = submit(runner, 'MODE=success');
+      await waitFor(() => runner.get(raw.id)?.status === 'succeeded');
+    });
+
+    it('unknown type rejects listing the known types; bad params reject per type', () => {
+      const runner = makeRunner({ typesEnabled: true });
+      expect(() => runner.submitType('research', {})).toThrow(
+        /unknown job type: research \(known types: generic, story, study, brief, app-build\)/,
+      );
+      expect(() => runner.submitType('story', {})).toThrow(/"idea" must be a non-empty string/);
+      expect(() => runner.submitType('story', 'nope')).toThrow(/JSON object/);
+      expect(runner.list()).toHaveLength(0);
+    });
+
+    it('submitType respects the JOBS kill-switch too', () => {
+      const runner = makeRunner({ jobsEnabled: false, typesEnabled: true });
+      expect(() => runner.submitType('story', { idea: 'x' })).toThrow(/job runner is disabled/);
+    });
+
+    it('a typed retry keeps its registry profile (marker copied to the fresh row)', async () => {
+      // MODE=flaky: first run fails without a sentinel, the auto-retry succeeds.
+      const runner = makeRunner({ typesEnabled: true, jobRetryCap: 2 });
+      const record = runner.submitType('story', { idea: 'MODE=flaky turtles' });
+
+      await waitFor(() => notices.length >= 1);
+      expect(notices[0]?.job.status).toBe('succeeded');
+      const retry = runner.list().find((j) => j.retryOf === record.id);
+      expect(retry).toBeDefined();
+      expect(
+        readFileSync(join(tmpDir, 'jobs', retry?.id ?? '', 'job-type.txt'), 'utf8').trim(),
+      ).toBe('story');
     });
   });
 

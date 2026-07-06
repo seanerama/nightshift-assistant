@@ -21,7 +21,11 @@ const USAGE = `nightshift — control the Nightshift Assistant daemon (loopback 
 
 Usage:
   nightshift submit --type <type> --title <title> --instruction <text> --workdir <dir>
-                                   Submit a background job
+                                   Submit a raw background job (generic worker)
+  nightshift submit --type <type> --params '<json>'
+                                   Submit a typed job (e.g. story|study|brief|app-build);
+                                   the daemon renders instruction/workdir/permissions
+                                   from its job-type registry
   nightshift jobs [--status <s>]   List jobs (status: queued|running|succeeded|failed|killed)
   nightshift job <id>              Show one job
   nightshift kill <id>             Kill a job (SIGTERM, then SIGKILL)
@@ -159,7 +163,14 @@ function formatStatus(s) {
 
 /** Split argv into { command, positionals, options, json }; --help handled here. */
 function parseArgs(argv) {
-  const takesValue = new Set(['--type', '--title', '--instruction', '--workdir', '--status']);
+  const takesValue = new Set([
+    '--type',
+    '--title',
+    '--instruction',
+    '--workdir',
+    '--status',
+    '--params',
+  ]);
   const options = {};
   const positionals = [];
   let json = false;
@@ -189,6 +200,30 @@ async function runCommand(conn, parsed) {
   const { command, positionals, options } = parsed;
   switch (command) {
     case 'submit': {
+      // Typed form (Stage 6): --type + --params '<json>' — the daemon's
+      // registry renders instruction/workdir/permissions. Mutually exclusive
+      // with the raw flags (the raw form is the generic worker, unchanged).
+      if (options.params !== undefined) {
+        if (options.type === undefined || options.type === '') {
+          fail(`submit --params requires --type\n\n${USAGE}`);
+        }
+        for (const field of ['title', 'instruction', 'workdir']) {
+          if (options[field] !== undefined) {
+            fail(`submit --params cannot be combined with --${field} (put it in the params JSON)\n\n${USAGE}`);
+          }
+        }
+        let params;
+        try {
+          params = JSON.parse(options.params);
+        } catch (err) {
+          fail(`--params is not valid JSON: ${err.message}`);
+        }
+        const result = await callApi(conn, 'POST', '/api/v1/jobs', {
+          type: options.type,
+          params,
+        });
+        return { result, render: (r) => `Job submitted.\n${formatJob(r.job)}` };
+      }
       for (const field of ['type', 'title', 'instruction', 'workdir']) {
         if (options[field] === undefined || options[field] === '') {
           fail(`submit requires --${field}\n\n${USAGE}`);

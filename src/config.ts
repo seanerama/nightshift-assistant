@@ -56,6 +56,13 @@ export interface Config {
    * Never enters workerEnv() — only the conversational session's spawn env.
    */
   apiToken: string;
+  /**
+   * Master switch for the job-type registry (Stage 6). Default OFF — with it
+   * unset, submits of any non-generic type reject with a clear error, workers
+   * spawn exactly as Stage 5 (no permission args, no extra env), and the
+   * session preamble omits the type list. Generic submits are unaffected.
+   */
+  typesEnabled: boolean;
 }
 
 export class ConfigError extends Error {}
@@ -176,6 +183,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   }
   const controlEnabled = controlRaw === 'true';
 
+  // Job-type-registry kill-switch: same discipline — only exactly "true"
+  // enables; "false"/unset stay dark; anything else fails fast.
+  const typesRaw = env.NIGHTSHIFT_TYPES_ENABLED;
+  if (typesRaw !== undefined && typesRaw !== '' && typesRaw !== 'true' && typesRaw !== 'false') {
+    throw new ConfigError(`NIGHTSHIFT_TYPES_ENABLED must be "true" or "false" (got: ${typesRaw})`);
+  }
+  const typesEnabled = typesRaw === 'true';
+
   const apiToken = env.NIGHTSHIFT_API_TOKEN ?? '';
   if (controlEnabled && apiToken === '') {
     throw new ConfigError(
@@ -202,5 +217,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     jobKillGraceSec,
     controlEnabled,
     apiToken,
+    typesEnabled,
   };
 }

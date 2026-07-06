@@ -43,7 +43,7 @@ describe('control API (/api/v1)', () => {
         ...overrides,
       }),
       makeTestLogger(),
-      { appDir: tmpDir },
+      { appDir: tmpDir, home: tmpDir },
     );
     const port = await a.listen();
     baseUrl = `http://127.0.0.1:${port}`;
@@ -232,6 +232,72 @@ describe('control API (/api/v1)', () => {
       const json = (await killed.json()) as { ok: boolean; job: { status: string } };
       expect(json.ok).toBe(true);
       expect(json.job.status).toBe('killed');
+    });
+  });
+
+  describe('typed submits (Stage 6, the contract-reserved { type, params } body)', () => {
+    it('POST { type, params } renders the job through the registry', async () => {
+      const a = await makeApp({ typesEnabled: true });
+      const res = await call('POST', '/api/v1/jobs', {
+        body: { type: 'story', params: { idea: 'MODE=success bedtime turtles' } },
+      });
+      expect(res.status).toBe(200);
+      const json = (await res.json()) as {
+        ok: boolean;
+        job: { id: string; type: string; title: string; workdir: string };
+      };
+      expect(json.ok).toBe(true);
+      expect(json.job.type).toBe('story');
+      expect(json.job.title).toBe('Story: MODE=success bedtime turtles');
+      expect(json.job.workdir).toBe(join(tmpDir, 'projects', 'mode-success-bedtime-turtles'));
+      await waitFor(() => a.jobs.get(json.job.id)?.status === 'succeeded');
+    });
+
+    it('unknown type → 400 listing the known types', async () => {
+      await makeApp({ typesEnabled: true });
+      const res = await call('POST', '/api/v1/jobs', { body: { type: 'research', params: {} } });
+      expect(res.status).toBe(400);
+      const json = (await res.json()) as { ok: boolean; error: string };
+      expect(json.ok).toBe(false);
+      expect(json.error).toContain('unknown job type: research');
+      expect(json.error).toContain('known types:');
+      expect(json.error).toContain('story');
+    });
+
+    it('types kill-switch OFF → non-generic 400 with a clear error; raw submit unaffected', async () => {
+      await makeApp(); // typesEnabled stays false
+      const typed = await call('POST', '/api/v1/jobs', {
+        body: { type: 'story', params: { idea: 'bedtime' } },
+      });
+      expect(typed.status).toBe(400);
+      expect(((await typed.json()) as { error: string }).error).toContain(
+        'NIGHTSHIFT_TYPES_ENABLED',
+      );
+
+      const raw = await call('POST', '/api/v1/jobs', { body: submitBody('MODE=success') });
+      expect(raw.status).toBe(200);
+    });
+
+    it('bad params → 400 naming the missing field; missing type string → 400', async () => {
+      await makeApp({ typesEnabled: true });
+      const missing = await call('POST', '/api/v1/jobs', { body: { type: 'story', params: {} } });
+      expect(missing.status).toBe(400);
+      expect(((await missing.json()) as { error: string }).error).toContain('"idea"');
+
+      const untyped = await call('POST', '/api/v1/jobs', { body: { params: { idea: 'x' } } });
+      expect(untyped.status).toBe(400);
+      expect(((await untyped.json()) as { error: string }).error).toContain(
+        'typed submit requires "type"',
+      );
+    });
+
+    it('the raw submit shape keeps working with the registry ENABLED', async () => {
+      const a = await makeApp({ typesEnabled: true });
+      const res = await call('POST', '/api/v1/jobs', { body: submitBody('MODE=success') });
+      expect(res.status).toBe(200);
+      const json = (await res.json()) as { ok: boolean; job: { id: string; workdir: string } };
+      expect(json.job.workdir).toBe(workdir); // caller-provided, not registry-derived
+      await waitFor(() => a.jobs.get(json.job.id)?.status === 'succeeded');
     });
   });
 

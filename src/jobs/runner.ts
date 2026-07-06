@@ -34,13 +34,21 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { closeSync, mkdirSync, openSync, readFileSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type Database from 'better-sqlite3';
 import type { Config } from '../config.js';
 import { transitionJob } from '../db/transitions.js';
 import type { Logger } from '../log.js';
 import type { JobRecord, JobSentinel, JobStatus, JobSubmit } from '../types.js';
-import { workerEnv } from './env.js';
+import { workerEnv, workerEnvWith } from './env.js';
+import {
+  getJobType,
+  type JobTypeEntry,
+  JobTypeError,
+  knownJobTypes,
+  renderJobType,
+} from './types.js';
 
 /** Rejected submit/kill input (invalid shape, unknown id, or the kill-switch). */
 export class JobError extends Error {}
@@ -93,11 +101,19 @@ export interface JobListFilter {
 export interface JobRunnerHooks {
   /** Base dir for jobs/<id>/ (default: daemon cwd) — tests only. */
   appDir?: string;
+  /** Root for typed jobs' ~/projects/<slug> workdirs (default: os.homedir()) — tests only. */
+  home?: string;
 }
 
 export interface JobRunner {
   /** Validate, insert `queued`, start if a concurrency slot is free. */
   submit(job: JobSubmit): JobRecord;
+  /**
+   * Stage 6 typed submit: render instruction/workdir/title from the job-type
+   * registry; the worker later spawns with the type's permission profile +
+   * extra env. Non-generic types reject unless NIGHTSHIFT_TYPES_ENABLED=true.
+   */
+  submitType(type: string, params: unknown): JobRecord;
   /** SIGTERM the live worker (SIGKILL after the grace period) → `killed`. */
   kill(id: string): JobRecord;
   get(id: string): JobRecord | null;
@@ -115,11 +131,42 @@ export function createJobRunner(
   hooks: JobRunnerHooks = {},
 ): JobRunner {
   const appDir = hooks.appDir ?? process.cwd();
+  const home = hooks.home ?? homedir();
 
   let finishHandler: FinishHandler = () => undefined;
 
   const jobDir = (id: string): string => join(appDir, 'jobs', id);
   const instructionPath = (id: string): string => join(jobDir(id), 'instruction.txt');
+  /**
+   * Stage 6: registry-typed jobs persist their registry type at
+   * jobs/<id>/job-type.txt (like instruction.txt — restart/retry-safe, no
+   * migration). ONLY typed submits write it; raw submits — whatever their
+   * type string says — never get one, so they keep the generic spawn shape.
+   */
+  const typeMarkerPath = (id: string): string => join(jobDir(id), 'job-type.txt');
+
+  /** The registry entry a row spawns under, or null for the generic spawn shape. */
+  const registryEntryFor = (id: string): JobTypeEntry | null => {
+    // Kill-switch: with types off, EVERY spawn is the Stage 5 generic shape —
+    // even a typed row queued while the flag was on (it will fail its skill
+    // run rather than run with a profile the operator turned off).
+    if (!config.typesEnabled) return null;
+    let marker: string;
+    try {
+      marker = readFileSync(typeMarkerPath(id), 'utf8').trim();
+    } catch {
+      return null;
+    }
+    const entry = getJobType(marker);
+    if (entry === undefined) {
+      log.warn('job-type marker names an unregistered type; spawning generic', {
+        jobId: id,
+        marker,
+      });
+      return null;
+    }
+    return entry;
+  };
 
   const getRow = (id: string): JobRow | null => {
     const row = db.prepare('SELECT * FROM jobs WHERE id = ?').get(id) as JobRow | undefined;
@@ -222,11 +269,16 @@ export function createJobRunner(
     workdir: string;
     attempts: number;
     retryOf: string | null;
+    /** Registry type for typed submits (persists the spawn profile); null = generic shape. */
+    registryType?: string | null;
   }): JobRow => {
     const id = randomUUID();
     const dir = jobDir(id);
     mkdirSync(dir, { recursive: true });
     writeFileSync(instructionPath(id), params.instruction);
+    if (params.registryType !== undefined && params.registryType !== null) {
+      writeFileSync(typeMarkerPath(id), params.registryType);
+    }
     db.prepare(
       `INSERT INTO jobs (id, schema, type, title, status, workdir, log_path, attempts,
                          created_at, sentinel_path, retry_of)
@@ -286,6 +338,13 @@ export function createJobRunner(
     if (attempts < config.jobRetryCap) {
       try {
         const instruction = readFileSync(instructionPath(id), 'utf8');
+        // A typed row's retry keeps its registry profile (marker copied).
+        let registryType: string | null = null;
+        try {
+          registryType = readFileSync(typeMarkerPath(id), 'utf8').trim();
+        } catch {
+          // raw/generic row — no marker to carry over
+        }
         const retry = insertQueuedRow({
           type: row.type,
           title: row.title,
@@ -293,6 +352,7 @@ export function createJobRunner(
           workdir: row.workdir,
           attempts,
           retryOf: row.id,
+          registryType,
         });
         requeued = true;
         // Retries log; only the chain-terminal state notifies.
@@ -333,14 +393,26 @@ export function createJobRunner(
       const prompt = instruction + sentinelEpilogue(row.sentinel_path);
       const sessionId = randomUUID();
 
+      // Stage 6: a registry-typed row spawns with the type's permission args
+      // ON TOP of the base argv and the type's extraEnv names ON TOP of
+      // workerEnv() (still default-deny; never replaced). No marker (or the
+      // types kill-switch off) → the exact Stage 5 spawn (test-pinned).
+      // ORDER MATTERS: permission args go AFTER `-p <prompt> --session-id`
+      // because --allowedTools is variadic and would swallow a following
+      // prompt as a tool name (verified against claude CLI v2.1.201).
+      const entry = registryEntryFor(row.id);
+      const spawnArgs = ['-p', prompt, '--session-id', sessionId];
+      if (entry !== null) spawnArgs.push(...entry.permissionArgs);
+      const spawnEnv = entry === null ? workerEnv() : workerEnvWith(entry.extraEnv);
+
       // Log fd is inherited by the child; detached + unref so a daemon
       // shutdown never takes workers down (the reconciler re-adopts them).
       const logFd = openSync(row.log_path, 'a');
       let child: ReturnType<typeof spawn>;
       try {
-        child = spawn(config.agentBin, ['-p', prompt, '--session-id', sessionId], {
+        child = spawn(config.agentBin, spawnArgs, {
           cwd: row.workdir,
-          env: workerEnv(),
+          env: spawnEnv,
           detached: true,
           stdio: ['ignore', logFd, logFd],
         });
@@ -432,6 +504,52 @@ export function createJobRunner(
         retryOf: null,
       });
       log.info('job submitted', { jobId: row.id, type: row.type, title: row.title });
+      startQueuedJobs();
+      const current = getRow(row.id);
+      return toRecord(current ?? row);
+    },
+
+    submitType(type: string, params: unknown): JobRecord {
+      if (!config.jobsEnabled) {
+        throw new JobError('job runner is disabled (set NIGHTSHIFT_JOBS_ENABLED=true to enable)');
+      }
+      if (typeof type !== 'string' || getJobType(type) === undefined) {
+        throw new JobError(
+          `unknown job type: ${String(type)} (known types: ${knownJobTypes().join(', ')})`,
+        );
+      }
+      // Stage 6 kill-switch: non-generic types are dark by default; generic
+      // through the typed path is the raw shape and stays unaffected.
+      if (type !== 'generic' && !config.typesEnabled) {
+        throw new JobError(
+          `job type '${type}' is disabled (set NIGHTSHIFT_TYPES_ENABLED=true to enable typed submits; generic jobs are unaffected)`,
+        );
+      }
+      let rendered: ReturnType<typeof renderJobType>;
+      try {
+        rendered = renderJobType(type, params, home);
+      } catch (err) {
+        if (err instanceof JobTypeError) throw new JobError(err.message);
+        throw err;
+      }
+      // Typed workdirs (~/projects/<slug>) are daemon-derived — create them;
+      // raw submits keep Stage 5 behavior (caller owns the dir).
+      mkdirSync(rendered.workdir, { recursive: true });
+      const row = insertQueuedRow({
+        type: rendered.type,
+        title: rendered.title,
+        instruction: rendered.instruction,
+        workdir: rendered.workdir,
+        attempts: 0,
+        retryOf: null,
+        registryType: type === 'generic' ? null : type,
+      });
+      log.info('typed job submitted', {
+        jobId: row.id,
+        type: row.type,
+        title: row.title,
+        workdir: row.workdir,
+      });
       startQueuedJobs();
       const current = getRow(row.id);
       return toRecord(current ?? row);

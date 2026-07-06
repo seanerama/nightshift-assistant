@@ -15,6 +15,7 @@ import type Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Config } from '../src/config.js';
 import { migrate, openDatabase } from '../src/db/migrate.js';
+import { jobTypesPreamble } from '../src/jobs/types.js';
 import {
   CONTROL_PREAMBLE,
   createSessionManager,
@@ -117,6 +118,31 @@ describe('control-enabled session spawn (Stage 5 gating)', () => {
     expect(prompt).toContain('notices arrive in Webex');
     // Resumed turn: no system-prompt append (the session already has it).
     expect(calls[1]?.args).not.toContain('--append-system-prompt');
+  });
+
+  it('lists the dispatchable job types when the registry is enabled (Stage 6)', async () => {
+    const mgr = makeManager({ typesEnabled: true });
+    await mgr.relay(inbound('hello'));
+
+    const [call] = invocations();
+    const seedIdx = call?.args.indexOf('--append-system-prompt') ?? -1;
+    const prompt = call?.args[seedIdx + 1] ?? '';
+    expect(prompt).toContain(CONTROL_PREAMBLE);
+    expect(prompt).toContain(jobTypesPreamble());
+    expect(prompt).toContain('- story');
+    expect(prompt).toContain("--params '<json>'");
+    expect(prompt).toContain('EXPERIMENTAL'); // app-build is flagged
+  });
+
+  it('omits the type list while the registry kill-switch is OFF', async () => {
+    const mgr = makeManager(); // typesEnabled stays false
+    await mgr.relay(inbound('hello'));
+
+    const [call] = invocations();
+    const seedIdx = call?.args.indexOf('--append-system-prompt') ?? -1;
+    const prompt = call?.args[seedIdx + 1] ?? '';
+    expect(prompt).toContain(CONTROL_PREAMBLE);
+    expect(prompt).not.toContain("--params '<json>'");
   });
 
   it('composes with the rotation seed: preamble first, then restored context', async () => {

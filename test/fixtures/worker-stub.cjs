@@ -12,6 +12,7 @@
  *   MODE=failure-sentinel  write a status:'failure' sentinel, exit 0
  *   MODE=malformed-sentinel  write invalid JSON at the sentinel path, exit 0
  *   MODE=dump-env          write process.env to worker-env.json in cwd, succeed
+ *   MODE=dump-args         write our argv to worker-args.json in cwd, succeed
  *   MODE=flaky             fail (no sentinel) on the first run in this workdir,
  *                          succeed on the next (marker file in cwd)
  *   MODE=sleep             sleep SLEEP_MS=<n> (default 60000) then succeed;
@@ -101,6 +102,12 @@ function workerRun() {
       // cwd is the job's workdir — the test reads worker-env.json from there.
       fs.writeFileSync('worker-env.json', JSON.stringify(process.env));
       writeSentinel({ schema: 1, status: 'success', summary: 'env dumped' });
+      process.exit(0);
+      break;
+    case 'dump-args':
+      // Stage 6: the argv the runner spawned us with (permission-profile pin).
+      fs.writeFileSync('worker-args.json', JSON.stringify(args));
+      writeSentinel({ schema: 1, status: 'success', summary: 'args dumped' });
       process.exit(0);
       break;
     case 'flaky':

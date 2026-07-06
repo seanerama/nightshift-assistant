@@ -29,6 +29,7 @@ import { existsSync } from 'node:fs';
 import { relative } from 'node:path';
 import type Database from 'better-sqlite3';
 import type { Config } from '../config.js';
+import { jobTypesPreamble } from '../jobs/types.js';
 import type { Logger } from '../log.js';
 import type { AssistantReply, InboundMessage, RotationReason, RotationRecord } from '../types.js';
 import { isPastDailyBoundary } from './boundary.js';
@@ -383,10 +384,13 @@ export function createSessionManager(
     if (current === null || pending) {
       if (current !== null) opts.sessionId = current.session_id;
       // System-prompt extras for a NEW session, each behind its own flag:
-      // the Stage 5 capability preamble (control), then the rotation seed.
-      // Both off → no --append-system-prompt at all (Stage 1 spawn shape).
+      // the Stage 5 capability preamble (control), the Stage 6 dispatchable
+      // type list (control AND types — a dark registry is not advertised),
+      // then the rotation seed. All off → no --append-system-prompt at all
+      // (Stage 1 spawn shape).
       const parts: string[] = [];
       if (config.controlEnabled) parts.push(CONTROL_PREAMBLE);
+      if (config.controlEnabled && config.typesEnabled) parts.push(jobTypesPreamble());
       if (config.rotationEnabled) {
         const seed = buildSeed(appDir, config.seedMaxBytes);
         if (seed !== '') parts.push(seed);
