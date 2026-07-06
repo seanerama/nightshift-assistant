@@ -3,12 +3,12 @@
 > Runtime/ops truth (framework-spec §4.6). Generated from `.verity/runtime.json`
 > by the Release/Deploy Operator. Secret LOCATIONS only — never values.
 
-**Live version:** 0.1.1
+**Live version:** 0.2.0
 **Deployed at:** (not deployed)
-**Rollback from:** v0.1.0 (git checkout v0.1.0 + restart; migrations additive so no schema rollback needed)
+**Rollback from:** v0.1.1 (git checkout v0.1.1 + restart; migrations additive)
 
 ## Environments
-- **prod:** {"tag":"v0.1.1","host":"dev server (nsaf-dev-server, user systemd)","webhook_url":"https://3090-tuf.taile0ffc4.ts.net/webhook","rotation":"enabled (NIGHTSHIFT_ROTATION_ENABLED=true); stage-2 smoke passed 2026-07-06"}
+- **prod:** {"tag":"v0.2.0","host":"dev server (nsaf-dev-server, user systemd)","webhook_url":"https://3090-tuf.taile0ffc4.ts.net/webhook","rotation":"enabled (NIGHTSHIFT_ROTATION_ENABLED=true); stage-2 smoke passed 2026-07-06","jobs":"enabled (NIGHTSHIFT_JOBS_ENABLED=true); stage-4 smoke passed 2026-07-06 (succeed + reconcile-adopt + kill + Webex notices)"}
 
 ## Secret locations (names + on-disk locations only, never values)
 - WEBEX_BOT_TOKEN, WEBEX_WEBHOOK_SECRET, WEBEX_OWNER_PERSON_ID, NIGHTSHIFT_AGENT_BIN @ ~/apps/nightshift-assistant/.env on the dev server (mode 0600)

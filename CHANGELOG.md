@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.0
+
+### Other
+- [stage 4] Job runner: minimal-env worker sessions, reconciliation, sentinels, finish notices (#8)
+- Plan: Stage 4 spec (job runner) + assessment
+- Ship v0.1.1: STATUS — rotation live, stage-2 smoke passed
+
 ## 0.1.1
 
 ### Fixes

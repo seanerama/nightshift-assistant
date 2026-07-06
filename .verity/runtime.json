@@ -1,13 +1,14 @@
 {
-  "version": "0.1.1",
+  "version": "0.2.0",
   "deployed_at": null,
-  "rollback_from": "v0.1.0 (git checkout v0.1.0 + restart; migrations additive so no schema rollback needed)",
+  "rollback_from": "v0.1.1 (git checkout v0.1.1 + restart; migrations additive)",
   "environments": {
     "prod": {
-      "tag": "v0.1.1",
+      "tag": "v0.2.0",
       "host": "dev server (nsaf-dev-server, user systemd)",
       "webhook_url": "https://3090-tuf.taile0ffc4.ts.net/webhook",
-      "rotation": "enabled (NIGHTSHIFT_ROTATION_ENABLED=true); stage-2 smoke passed 2026-07-06"
+      "rotation": "enabled (NIGHTSHIFT_ROTATION_ENABLED=true); stage-2 smoke passed 2026-07-06",
+      "jobs": "enabled (NIGHTSHIFT_JOBS_ENABLED=true); stage-4 smoke passed 2026-07-06 (succeed + reconcile-adopt + kill + Webex notices)"
     }
   },
   "secret_locations": [
