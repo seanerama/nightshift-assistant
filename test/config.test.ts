@@ -42,6 +42,10 @@ describe('loadConfig', () => {
     expect(config.rotateHour).toBe(4);
     expect(config.sizeCapTurns).toBe(200);
     expect(config.seedMaxBytes).toBe(16384);
+    expect(config.jobsEnabled).toBe(false); // job runner ships dark
+    expect(config.maxJobs).toBe(2);
+    expect(config.jobRetryCap).toBe(2);
+    expect(config.jobKillGraceSec).toBe(10);
   });
 
   it('enables rotation only on exactly "true" and fails fast on garbage', () => {
@@ -74,6 +78,31 @@ describe('loadConfig', () => {
     expect(() => loadConfig({ ...FULL_ENV, NIGHTSHIFT_ROTATE_HOUR: '-1' })).toThrow(ConfigError);
     expect(() => loadConfig({ ...FULL_ENV, NIGHTSHIFT_SIZE_CAP_TURNS: '0' })).toThrow(ConfigError);
     expect(() => loadConfig({ ...FULL_ENV, NIGHTSHIFT_SEED_MAX_BYTES: 'lots' })).toThrow(
+      ConfigError,
+    );
+  });
+
+  it('enables the job runner only on exactly "true" and fails fast on garbage', () => {
+    expect(loadConfig({ ...FULL_ENV, NIGHTSHIFT_JOBS_ENABLED: 'true' }).jobsEnabled).toBe(true);
+    expect(loadConfig({ ...FULL_ENV, NIGHTSHIFT_JOBS_ENABLED: 'false' }).jobsEnabled).toBe(false);
+    expect(() => loadConfig({ ...FULL_ENV, NIGHTSHIFT_JOBS_ENABLED: 'TRUE' })).toThrow(ConfigError);
+    expect(() => loadConfig({ ...FULL_ENV, NIGHTSHIFT_JOBS_ENABLED: 'on' })).toThrow(ConfigError);
+  });
+
+  it('validates the job-runner numbers (positive integers)', () => {
+    const config = loadConfig({
+      ...FULL_ENV,
+      NIGHTSHIFT_MAX_JOBS: '1',
+      NIGHTSHIFT_JOB_RETRY_CAP: '3',
+      NIGHTSHIFT_JOB_KILL_GRACE_SEC: '5',
+    });
+    expect(config.maxJobs).toBe(1);
+    expect(config.jobRetryCap).toBe(3);
+    expect(config.jobKillGraceSec).toBe(5);
+
+    expect(() => loadConfig({ ...FULL_ENV, NIGHTSHIFT_MAX_JOBS: '0' })).toThrow(ConfigError);
+    expect(() => loadConfig({ ...FULL_ENV, NIGHTSHIFT_JOB_RETRY_CAP: '-1' })).toThrow(ConfigError);
+    expect(() => loadConfig({ ...FULL_ENV, NIGHTSHIFT_JOB_KILL_GRACE_SEC: 'soon' })).toThrow(
       ConfigError,
     );
   });

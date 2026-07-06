@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import type Database from 'better-sqlite3';
 import type { Config } from './config.js';
 import { migrate, openDatabase } from './db/migrate.js';
+import { createJobRunner, type JobRunner } from './jobs/runner.js';
 import type { Logger } from './log.js';
 import {
   createSessionManager,
@@ -36,6 +37,8 @@ export interface App {
   db: Database.Database;
   /** Exposed for later stages (manual rotation) — not operator-exposed yet. */
   sessions: SessionManager;
+  /** Job runner engine (Stage 4) — assistant-tool exposure is the capability-wiring stage. */
+  jobs: JobRunner;
   /** Listen on 127.0.0.1 ONLY (ADR 0001: loopback bind; tunnel exposes /webhook). */
   listen(): Promise<number>;
   close(): Promise<void>;
@@ -70,6 +73,22 @@ export function createApp(
     },
   });
 
+  // Job runner (Stage 4). Finish notices reuse the same owner-room tracking as
+  // rotation's notify; with no room seen yet the notice is logged and skipped.
+  const jobs = createJobRunner(
+    db,
+    log,
+    config,
+    sessionHooks.appDir === undefined ? {} : { appDir: sessionHooks.appDir },
+  );
+  jobs.onFinish(async (job, notice): Promise<void> => {
+    if (lastOwnerRoomId === null) {
+      log.info('job finish notice skipped: no owner room seen yet', { jobId: job.id });
+      return;
+    }
+    await sender.send({ roomId: lastOwnerRoomId }, notice);
+  });
+
   const server = createTransportServer({
     config,
     log,
@@ -96,10 +115,35 @@ export function createApp(
     dailyTimer.unref();
   }
 
+  // Job reconciler: startup pass (re-adopt persisted running/queued rows from a
+  // previous daemon life) + the same 60s cadence. Dark unless
+  // NIGHTSHIFT_JOBS_ENABLED=true — no interval, no reconcile, submit() rejects.
+  let jobsTimer: NodeJS.Timeout | null = null;
+  if (config.jobsEnabled) {
+    try {
+      jobs.reconcile();
+    } catch (err) {
+      log.error('startup job reconcile failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    jobsTimer = setInterval(() => {
+      try {
+        jobs.reconcile();
+      } catch (err) {
+        log.error('job reconcile tick failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }, DAILY_CHECK_INTERVAL_MS);
+    jobsTimer.unref();
+  }
+
   return {
     server,
     db,
     sessions,
+    jobs,
     listen(): Promise<number> {
       return new Promise((resolve, reject) => {
         server.once('error', reject);
@@ -112,7 +156,10 @@ export function createApp(
       });
     },
     close(): Promise<void> {
+      // Intervals only — running workers are NOT killed on daemon shutdown;
+      // the reconciler re-adopts them on restart via their persisted pids.
       if (dailyTimer !== null) clearInterval(dailyTimer);
+      if (jobsTimer !== null) clearInterval(jobsTimer);
       return new Promise((resolve, reject) => {
         server.close((err) => {
           db.close();
