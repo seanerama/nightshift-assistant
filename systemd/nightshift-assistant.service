@@ -1,0 +1,26 @@
+# Nightshift Assistant core daemon (ADR 0003: systemd on the dev server).
+# Install: copy to /etc/systemd/system/, create /etc/nightshift/nightshift.env
+# from .env.example (mode 0600, owner root), then:
+#   systemctl daemon-reload && systemctl enable --now nightshift-assistant
+[Unit]
+Description=Nightshift Assistant core daemon (Webex → Claude relay)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=smahoney
+WorkingDirectory=/home/smahoney/apps/nightshift-assistant
+EnvironmentFile=/etc/nightshift/nightshift.env
+ExecStart=/usr/bin/env node dist/index.js
+Restart=on-failure
+RestartSec=5
+# Structured JSON logs go to stdout; journald picks them up.
+StandardOutput=journal
+StandardError=journal
+# Hardening: the daemon binds loopback only; keep its blast radius small.
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,12 @@
+# Daily backup timer for nightshift-backup.service.
+# Install alongside the service, then: systemctl enable --now nightshift-backup.timer
+[Unit]
+Description=Daily Nightshift Assistant SQLite backup
+
+[Timer]
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target
