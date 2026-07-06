@@ -21,6 +21,17 @@ export interface Config {
   port: number;
   /** Seconds before an in-flight agent turn is killed and reported as an error. */
   turnTimeoutSec: number;
+  /**
+   * Master switch for the rotation triggers + session seeding (Stage 2).
+   * Default OFF — with it unset, relay behavior is identical to Stage 1.
+   */
+  rotationEnabled: boolean;
+  /** Local hour (0-23) after which the daily rotation fires (default 4). */
+  rotateHour: number;
+  /** Turn count a relay must push PAST to trigger a size-cap rotation. */
+  sizeCapTurns: number;
+  /** Max bytes of seed context handed to a brand-new session (newest wins). */
+  seedMaxBytes: number;
 }
 
 export class ConfigError extends Error {}
@@ -61,6 +72,42 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     );
   }
 
+  // Rotation kill-switch: only exactly "true" enables; "false"/unset stay dark;
+  // anything else is a config mistake — fail fast rather than silently disable.
+  const rotationRaw = env.NIGHTSHIFT_ROTATION_ENABLED;
+  if (
+    rotationRaw !== undefined &&
+    rotationRaw !== '' &&
+    rotationRaw !== 'true' &&
+    rotationRaw !== 'false'
+  ) {
+    throw new ConfigError(
+      `NIGHTSHIFT_ROTATION_ENABLED must be "true" or "false" (got: ${rotationRaw})`,
+    );
+  }
+  const rotationEnabled = rotationRaw === 'true';
+
+  const rotateHour = Number.parseInt(env.NIGHTSHIFT_ROTATE_HOUR ?? '4', 10);
+  if (!Number.isInteger(rotateHour) || rotateHour < 0 || rotateHour > 23) {
+    throw new ConfigError(
+      `NIGHTSHIFT_ROTATE_HOUR is not a valid hour (0-23): ${env.NIGHTSHIFT_ROTATE_HOUR}`,
+    );
+  }
+
+  const sizeCapTurns = Number.parseInt(env.NIGHTSHIFT_SIZE_CAP_TURNS ?? '200', 10);
+  if (!Number.isInteger(sizeCapTurns) || sizeCapTurns < 1) {
+    throw new ConfigError(
+      `NIGHTSHIFT_SIZE_CAP_TURNS is not a valid positive integer: ${env.NIGHTSHIFT_SIZE_CAP_TURNS}`,
+    );
+  }
+
+  const seedMaxBytes = Number.parseInt(env.NIGHTSHIFT_SEED_MAX_BYTES ?? '16384', 10);
+  if (!Number.isInteger(seedMaxBytes) || seedMaxBytes < 1) {
+    throw new ConfigError(
+      `NIGHTSHIFT_SEED_MAX_BYTES is not a valid positive integer: ${env.NIGHTSHIFT_SEED_MAX_BYTES}`,
+    );
+  }
+
   return {
     webexBotToken,
     webexWebhookSecret,
@@ -70,5 +117,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     dbPath: env.NIGHTSHIFT_DB_PATH ?? 'data/nightshift.db',
     port,
     turnTimeoutSec,
+    rotationEnabled,
+    rotateHour,
+    sizeCapTurns,
+    seedMaxBytes,
   };
 }

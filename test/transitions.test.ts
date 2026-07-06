@@ -24,7 +24,7 @@ function statusOf(db: Database.Database, id: string): JobStatus {
 }
 
 describe('migration ladder', () => {
-  it('applies migration 0001 twice on a scratch DB without error (idempotent)', () => {
+  it('applies the full ladder twice on a scratch DB without error (idempotent)', () => {
     const db = openDatabase(':memory:');
     const log = makeTestLogger();
     migrate(db, MIGRATIONS_DIR, log);
@@ -33,7 +33,7 @@ describe('migration ladder', () => {
     const version = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as {
       v: number;
     };
-    expect(version.v).toBe(1);
+    expect(version.v).toBe(2); // 0001 init + 0002 sessions.turns
 
     const tables = db
       .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name`)
@@ -43,9 +43,16 @@ describe('migration ladder', () => {
     expect(names).toContain('jobs');
     expect(names).toContain('schema_version');
 
-    // Applied exactly once: a single version row.
+    // Each migration applied exactly once: one version row per rung.
     const rows = db.prepare('SELECT COUNT(*) AS n FROM schema_version').get() as { n: number };
-    expect(rows.n).toBe(1);
+    expect(rows.n).toBe(2);
+
+    // 0002 is additive: existing rows backfill turns = 0.
+    db.prepare(`INSERT INTO sessions (session_id, started_at) VALUES ('s1', '2026-07-06')`).run();
+    const session = db.prepare('SELECT turns FROM sessions WHERE session_id = ?').get('s1') as {
+      turns: number;
+    };
+    expect(session.turns).toBe(0);
     db.close();
   });
 });

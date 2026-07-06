@@ -32,6 +32,25 @@ export interface AssistantReply {
   rotated: boolean;
 }
 
+/** contracts/assistant-session.md — the reasons rotate() may be invoked. */
+export type RotationReason = 'daily' | 'size-cap' | 'manual';
+
+/** contracts/assistant-session.md — rotate() return shape. */
+export interface RotationRecord {
+  schema: 1;
+  /** The rotated-out session. */
+  closedSessionId: string;
+  /** Pre-assigned id the next (seeded) session starts under at its first relay. */
+  newSessionId: string;
+  reason: RotationReason;
+  /** logs/daily/YYYY-MM-DD.md written by the ritual. */
+  summaryPath: string;
+  /** Resolved claude CLI transcript path ('' when none exists — tolerated). */
+  transcriptPath: string;
+  /** ISO 8601. */
+  rotatedAt: string;
+}
+
 /** contracts/job-lifecycle.md — the guarded state machine's states. */
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'killed';
 
