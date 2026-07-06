@@ -7,6 +7,7 @@ import type { Config } from '../src/config.js';
 import type { Logger } from '../src/log.js';
 
 export const AGENT_STUB = fileURLToPath(new URL('./fixtures/agent-stub.cjs', import.meta.url));
+export const WORKER_STUB = fileURLToPath(new URL('./fixtures/worker-stub.cjs', import.meta.url));
 export const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 
 export interface LogEntry {
@@ -49,6 +50,10 @@ export function makeConfig(overrides: Partial<Config> = {}): Config {
     rotateHour: 4,
     sizeCapTurns: 200,
     seedMaxBytes: 16384,
+    jobsEnabled: false, // Stage 4 ships dark; job tests flip it on
+    maxJobs: 2,
+    jobRetryCap: 2,
+    jobKillGraceSec: 10,
     ...overrides,
   };
 }
