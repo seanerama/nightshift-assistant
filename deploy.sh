@@ -23,13 +23,15 @@ ssh "$HOST" APP_DIR="$APP_DIR" REPO_URL="$REPO_URL" TAG="$TAG" 'bash -s' <<'REMO
 set -euo pipefail
 cd ~
 if [ ! -d "$APP_DIR/.git" ]; then
-  mkdir -p "$(dirname "$APP_DIR")"
-  git clone "$REPO_URL" "$APP_DIR"
+  # Bootstrap in place — the dir may already exist (e.g. holding .env).
+  mkdir -p "$APP_DIR"
+  git -C "$APP_DIR" init -q
+  git -C "$APP_DIR" remote add origin "$REPO_URL"
 fi
 cd "$APP_DIR"
 git fetch --tags origin
 git checkout --detach "refs/tags/$TAG"
-npm ci --omit=dev=false >/dev/null
+npm ci >/dev/null
 npm run build
 
 # Install USER units adapted from the committed system units:
