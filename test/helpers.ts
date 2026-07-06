@@ -45,6 +45,10 @@ export function makeConfig(overrides: Partial<Config> = {}): Config {
     dbPath: ':memory:',
     port: 0, // ephemeral
     turnTimeoutSec: 10,
+    rotationEnabled: false, // Stage 2 ships dark; rotation tests flip it on
+    rotateHour: 4,
+    sizeCapTurns: 200,
+    seedMaxBytes: 16384,
     ...overrides,
   };
 }

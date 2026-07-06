@@ -22,6 +22,8 @@ export interface TransportDeps {
   webex: WebexClient;
   sender: Sender;
   relay(msg: InboundMessage): Promise<{ text: string }>;
+  /** Called with the owner's roomId on every authorized message (notice routing). */
+  onOwnerRoom?(roomId: string): void;
   version: string;
 }
 
@@ -72,7 +74,7 @@ function respond(res: ServerResponse, status: number, body: Record<string, unkno
 }
 
 export function createTransportServer(deps: TransportDeps): Server {
-  const { config, log, webex, sender, relay, version } = deps;
+  const { config, log, webex, sender, relay, onOwnerRoom, version } = deps;
   const dedup = new MessageDedup();
   const startedAt = Date.now();
 
@@ -85,6 +87,9 @@ export function createTransportServer(deps: TransportDeps): Server {
       log.info('webhook dropped: sender is not the owner', { messageId });
       return;
     }
+
+    // Remember the owner's most recent room for proactive notices (rotation).
+    onOwnerRoom?.(message.roomId);
 
     const inbound: InboundMessage = {
       schema: 1,

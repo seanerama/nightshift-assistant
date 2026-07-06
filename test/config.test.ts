@@ -38,6 +38,44 @@ describe('loadConfig', () => {
     expect(config.dbPath).toBe('data/nightshift.db');
     expect(config.port).toBe(3777);
     expect(config.turnTimeoutSec).toBe(300);
+    expect(config.rotationEnabled).toBe(false); // rotation ships dark
+    expect(config.rotateHour).toBe(4);
+    expect(config.sizeCapTurns).toBe(200);
+    expect(config.seedMaxBytes).toBe(16384);
+  });
+
+  it('enables rotation only on exactly "true" and fails fast on garbage', () => {
+    expect(loadConfig({ ...FULL_ENV, NIGHTSHIFT_ROTATION_ENABLED: 'true' }).rotationEnabled).toBe(
+      true,
+    );
+    expect(loadConfig({ ...FULL_ENV, NIGHTSHIFT_ROTATION_ENABLED: 'false' }).rotationEnabled).toBe(
+      false,
+    );
+    expect(() => loadConfig({ ...FULL_ENV, NIGHTSHIFT_ROTATION_ENABLED: 'TRUE' })).toThrow(
+      ConfigError,
+    );
+    expect(() => loadConfig({ ...FULL_ENV, NIGHTSHIFT_ROTATION_ENABLED: 'yes' })).toThrow(
+      ConfigError,
+    );
+  });
+
+  it('validates the rotation numbers (hour range, positive integers)', () => {
+    const config = loadConfig({
+      ...FULL_ENV,
+      NIGHTSHIFT_ROTATE_HOUR: '0',
+      NIGHTSHIFT_SIZE_CAP_TURNS: '3',
+      NIGHTSHIFT_SEED_MAX_BYTES: '512',
+    });
+    expect(config.rotateHour).toBe(0);
+    expect(config.sizeCapTurns).toBe(3);
+    expect(config.seedMaxBytes).toBe(512);
+
+    expect(() => loadConfig({ ...FULL_ENV, NIGHTSHIFT_ROTATE_HOUR: '24' })).toThrow(ConfigError);
+    expect(() => loadConfig({ ...FULL_ENV, NIGHTSHIFT_ROTATE_HOUR: '-1' })).toThrow(ConfigError);
+    expect(() => loadConfig({ ...FULL_ENV, NIGHTSHIFT_SIZE_CAP_TURNS: '0' })).toThrow(ConfigError);
+    expect(() => loadConfig({ ...FULL_ENV, NIGHTSHIFT_SEED_MAX_BYTES: 'lots' })).toThrow(
+      ConfigError,
+    );
   });
 
   it('honors the seam overrides (WEBEX_API_BASE, NIGHTSHIFT_AGENT_BIN)', () => {
