@@ -50,6 +50,7 @@ interface DbSessionRow {
   rotation_reason: string | null;
   is_current: number;
   turns: number;
+  pending: number;
 }
 
 const inbound = (text: string): InboundMessage => ({
@@ -178,7 +179,7 @@ describe('rotation ritual (session-manager level)', () => {
       transcript,
     );
 
-    // Sessions rows: outgoing flipped; a pending row (turns=0) is current.
+    // Sessions rows: outgoing flipped; an EXPLICITLY pending row is current.
     const all = rows();
     expect(all).toHaveLength(2);
     expect(all[0]?.is_current).toBe(0);
@@ -187,6 +188,7 @@ describe('rotation ritual (session-manager level)', () => {
     expect(all[1]?.session_id).toBe(record.newSessionId);
     expect(all[1]?.is_current).toBe(1);
     expect(all[1]?.turns).toBe(0);
+    expect(all[1]?.pending).toBe(1);
 
     // Notice went out through the notify hook (app wires it to send()).
     expect(notices).toEqual([
@@ -211,6 +213,7 @@ describe('rotation ritual (session-manager level)', () => {
     expect(reply.sessionId).toBe(record.newSessionId);
     expect(reply.rotated).toBe(false);
     expect(currentRow()?.turns).toBe(1); // counter restarted on the new session
+    expect(currentRow()?.pending).toBe(0); // materialized: marker cleared on first success
   });
 
   it('seeds a brand-new session (no row at all) from existing memory + latest summary', async () => {
@@ -353,6 +356,81 @@ describe('rotation ritual (session-manager level)', () => {
         (e) => e.level === 'error' && e.msg.includes('rotation notice delivery failed'),
       ),
     ).toBe(true);
+  });
+
+  describe('pending marker (Stage 3 regression: pending-ness must be explicit, not turns==0)', () => {
+    it('REGRESSION: a materialized session backfilled to turns=0 (live incident) is RESUMED, never started', async () => {
+      // The 2026-07-06 incident state: migration 0002 backfilled turns = 0 onto
+      // the pre-existing live session (real id, already materialized, NOT
+      // pending). Insert exactly that row — defaults supply the backfill state.
+      db.prepare(
+        'INSERT INTO sessions (session_id, started_at, is_current, turns) VALUES (?, ?, 1, 0)',
+      ).run('f0138138-aaaa-bbbb-cccc-000000000001', clock.toISOString());
+
+      const mgr = makeManager({ rotationEnabled: true });
+      const reply = await mgr.relay(inbound('good evening'));
+
+      // Stage 2 tried to START it (`--session-id` + seed) and the CLI refused
+      // ("Session ID … is already in use"). It must be RESUMED.
+      const call = invocations()[0];
+      expect(call?.args).not.toContain('--session-id');
+      expect(call?.args).toContain('--resume');
+      expect(call?.args[(call?.args.indexOf('--resume') ?? -1) + 1]).toBe(
+        'f0138138-aaaa-bbbb-cccc-000000000001',
+      );
+      expect(reply.text).toBe('pong: good evening');
+      expect(currentRow()?.rotation_reason ?? null).toBeNull(); // NOT force-retired as 'died'
+    });
+
+    it('a pending row whose first turn FAILS stays pending: the retry STARTS it again, never resumes', async () => {
+      const mgr = makeManager({ rotationEnabled: true });
+      await mgr.relay(inbound('hello'));
+      const record = await mgr.rotate('manual');
+      expect(currentRow()?.pending).toBe(1);
+
+      // First turn on the pending session dies.
+      process.env.AGENT_STUB_MODE = 'die';
+      const failed = await mgr.relay(inbound('are you there?'));
+      expect(failed.text).toContain('hit an error');
+
+      // The row was NOT retired: still current, still pending, same id.
+      expect(currentRow()?.session_id).toBe(record.newSessionId);
+      expect(currentRow()?.pending).toBe(1);
+
+      // Retry STARTS it under the same pre-assigned id (with the seed), and
+      // success finally clears the marker.
+      delete process.env.AGENT_STUB_MODE;
+      await mgr.relay(inbound('retry'));
+      const retry = invocations()[3];
+      expect(retry?.args).not.toContain('--resume');
+      const sidIdx = retry?.args.indexOf('--session-id') ?? -1;
+      expect(sidIdx).toBeGreaterThan(-1);
+      expect(retry?.args[sidIdx + 1]).toBe(record.newSessionId);
+      expect(currentRow()?.pending).toBe(0);
+      expect(currentRow()?.turns).toBe(1);
+    });
+
+    it('maybeRotateDaily skips a pending row; a non-pending turns=0 row past the boundary DOES rotate', async () => {
+      const mgr = makeManager({ rotationEnabled: true, rotateHour: 4 });
+      clock = new Date(2026, 6, 6, 5, 0, 0); // 05:00 local, past the 04:00 boundary
+
+      await mgr.relay(inbound('hello'));
+      await mgr.rotate('manual');
+
+      // Rotation-created pending row, aged past the boundary → still skipped.
+      db.prepare('UPDATE sessions SET started_at = ? WHERE is_current = 1').run(
+        new Date(2026, 6, 4, 22, 0, 0).toISOString(),
+      );
+      expect(currentRow()?.pending).toBe(1);
+      expect(await mgr.maybeRotateDaily()).toBe(false);
+
+      // The incident shape: a REAL (non-pending) session whose backfilled turn
+      // count lies at 0, past the boundary → rotates (turns==0 no longer skips).
+      db.prepare('UPDATE sessions SET pending = 0, turns = 0 WHERE is_current = 1').run();
+      expect(await mgr.maybeRotateDaily()).toBe(true);
+      expect(rows()[1]?.rotation_reason).toBe('daily');
+      expect(currentRow()?.pending).toBe(1); // and the ritual minted a fresh pending row
+    });
   });
 
   describe('kill-switch: NIGHTSHIFT_ROTATION_ENABLED unset (default)', () => {
