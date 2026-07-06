@@ -34,6 +34,12 @@ git checkout --detach "refs/tags/$TAG"
 npm ci >/dev/null
 npm run build
 
+# Stage 5: the nightshift CLI on PATH — the conversational session's Bash tool
+# and the operator's ops command are the same committed script. Symlink (not
+# copy) so the CLI resolves the app dir's .env for its token/port fallback.
+mkdir -p ~/.local/bin
+ln -sfn "$HOME/$APP_DIR/bin/nightshift" ~/.local/bin/nightshift
+
 # Install USER units adapted from the committed system units:
 #  - drop User= (implicit for user units)
 #  - WantedBy=default.target (user session equivalent of multi-user.target)
