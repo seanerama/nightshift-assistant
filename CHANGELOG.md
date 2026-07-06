@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.0
+
+### Other
+- [stage 2] Rotation ritual: daily summary, memory promotion, seeded fresh sessions (#4)
+- Plan: Stage 2 spec (rotation ritual) + assessment
+- Ship v0.0.1: STATUS runtime truth + ADR 0006 (Tailscale Funnel ingress)
+- Ship: deploy.sh fixes — bootstrap into existing dir, drop invalid npm flag
+
 ## 0.0.1
 
 ### Other
