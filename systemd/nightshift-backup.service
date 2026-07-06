@@ -1,0 +1,14 @@
+# One-shot SQLite backup (ADR 0004: scheduled backups from day one).
+# Runs scripts/backup.sh: VACUUM INTO a consistent online copy, keep newest 14.
+# Backups land OUTSIDE the primary data directory.
+[Unit]
+Description=Nightshift Assistant SQLite backup (VACUUM INTO + retention)
+
+[Service]
+Type=oneshot
+User=smahoney
+WorkingDirectory=/home/smahoney/apps/nightshift-assistant
+Environment=NIGHTSHIFT_DB_PATH=/home/smahoney/apps/nightshift-assistant/data/nightshift.db
+Environment=NIGHTSHIFT_BACKUP_DIR=/home/smahoney/backups/nightshift
+Environment=NIGHTSHIFT_BACKUP_KEEP=14
+ExecStart=/bin/sh /home/smahoney/apps/nightshift-assistant/scripts/backup.sh
