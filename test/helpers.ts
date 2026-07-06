@@ -54,6 +54,8 @@ export function makeConfig(overrides: Partial<Config> = {}): Config {
     maxJobs: 2,
     jobRetryCap: 2,
     jobKillGraceSec: 10,
+    controlEnabled: false, // Stage 5 ships dark; control tests flip it on
+    apiToken: '',
     ...overrides,
   };
 }
