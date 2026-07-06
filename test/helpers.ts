@@ -56,6 +56,7 @@ export function makeConfig(overrides: Partial<Config> = {}): Config {
     jobKillGraceSec: 10,
     controlEnabled: false, // Stage 5 ships dark; control tests flip it on
     apiToken: '',
+    typesEnabled: false, // Stage 6 ships dark; job-type tests flip it on
     ...overrides,
   };
 }

@@ -128,6 +128,16 @@ describe('loadConfig', () => {
     );
   });
 
+  it('enables the job-type registry only on exactly "true" and fails fast on garbage', () => {
+    expect(loadConfig({ ...FULL_ENV }).typesEnabled).toBe(false); // ships dark
+    expect(loadConfig({ ...FULL_ENV, NIGHTSHIFT_TYPES_ENABLED: 'true' }).typesEnabled).toBe(true);
+    expect(loadConfig({ ...FULL_ENV, NIGHTSHIFT_TYPES_ENABLED: 'false' }).typesEnabled).toBe(false);
+    expect(() => loadConfig({ ...FULL_ENV, NIGHTSHIFT_TYPES_ENABLED: 'TRUE' })).toThrow(
+      ConfigError,
+    );
+    expect(() => loadConfig({ ...FULL_ENV, NIGHTSHIFT_TYPES_ENABLED: 'on' })).toThrow(ConfigError);
+  });
+
   it('requires a non-empty NIGHTSHIFT_API_TOKEN when the control surface is enabled', () => {
     expect(() => loadConfig({ ...FULL_ENV, NIGHTSHIFT_CONTROL_ENABLED: 'true' })).toThrow(
       /NIGHTSHIFT_API_TOKEN/,
