@@ -45,12 +45,18 @@ export interface App {
   close(): Promise<void>;
 }
 
+/** Test-only seams: the session-manager hooks plus the typed-job workdir root. */
+export type AppHooks = Omit<SessionManagerHooks, 'notify'> & {
+  /** Root for typed jobs' ~/projects/<slug> workdirs (default: os.homedir()). */
+  home?: string;
+};
+
 export function createApp(
   config: Config,
   log: Logger,
   // Session-manager seams (clock, appDir, projectsRoot) — tests only; the
   // daemon always uses the defaults. notify is wired here, not injectable.
-  sessionHooks: Omit<SessionManagerHooks, 'notify'> = {},
+  sessionHooks: AppHooks = {},
 ): App {
   const db = openDatabase(config.dbPath);
   migrate(db, MIGRATIONS_DIR, log);
@@ -76,12 +82,10 @@ export function createApp(
 
   // Job runner (Stage 4). Finish notices reuse the same owner-room tracking as
   // rotation's notify; with no room seen yet the notice is logged and skipped.
-  const jobs = createJobRunner(
-    db,
-    log,
-    config,
-    sessionHooks.appDir === undefined ? {} : { appDir: sessionHooks.appDir },
-  );
+  const jobs = createJobRunner(db, log, config, {
+    ...(sessionHooks.appDir === undefined ? {} : { appDir: sessionHooks.appDir }),
+    ...(sessionHooks.home === undefined ? {} : { home: sessionHooks.home }),
+  });
   jobs.onFinish(async (job, notice): Promise<void> => {
     if (lastOwnerRoomId === null) {
       log.info('job finish notice skipped: no owner room seen yet', { jobId: job.id });
