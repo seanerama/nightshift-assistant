@@ -1,18 +1,48 @@
 /**
- * Session manager, relay surface only (contracts/assistant-session.md).
- * Exactly ONE conversational claude session at a time: relay() calls serialize —
- * a second inbound message queues behind the in-flight turn. The session is a
- * child process in headless JSON mode; the binary path comes from
- * NIGHTSHIFT_AGENT_BIN (the test seam). Current session id persists in the
- * sessions table and later turns resume it. If the session dies mid-turn,
- * relay() returns an error reply — never silence. NO rotation ritual in Stage 1.
+ * Session manager (contracts/assistant-session.md): relay() + the rotation
+ * ritual. Exactly ONE conversational claude session at a time: relay turns AND
+ * rotations serialize on the same queue — a rotation never lands mid-turn. The
+ * session is a child process in headless JSON mode; the binary path comes from
+ * NIGHTSHIFT_AGENT_BIN (the test seam).
+ *
+ * Rotation ritual — rotate(reason) → RotationRecord:
+ *   1. final summary turn against the OUTGOING session (fixed prompt; a failed
+ *      summary NEVER blocks rotation — stub summary + logged failure);
+ *   2. day-summary written to logs/daily/YYYY-MM-DD.md (-2, -3… on repeats);
+ *   3. durable facts promoted into memory/ (MEMORY.md index + dated append);
+ *   4. transcript location resolved (claude CLI convention) and recorded;
+ *   5. sessions row flipped (is_current=0, rotated_at, rotation_reason) and a
+ *      fresh PENDING row (pre-assigned session id, turns=0) becomes current —
+ *      the next relay() starts it with --session-id plus a seed built from
+ *      memory/ + the latest daily summary, delivered via --append-system-prompt
+ *      so it never appears in the user-visible reply.
+ *
+ * ALL rotation triggers + seeding are dark unless NIGHTSHIFT_ROTATION_ENABLED
+ * is exactly "true" — with it unset, relay behaves identically to Stage 1.
+ * The rotation notice goes out via the injected notify hook (the app wires it
+ * to send() with the owner's last-seen room, tracked in-memory for this stage).
  */
 
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { relative } from 'node:path';
 import type Database from 'better-sqlite3';
 import type { Config } from '../config.js';
 import type { Logger } from '../log.js';
-import type { AssistantReply, InboundMessage } from '../types.js';
+import type { AssistantReply, InboundMessage, RotationReason, RotationRecord } from '../types.js';
+import { isPastDailyBoundary } from './boundary.js';
+import {
+  defaultProjectsRoot,
+  extractDurableMemory,
+  localDateStamp,
+  promoteDurableMemory,
+  recordTranscriptLocation,
+  SUMMARY_PROMPT,
+  transcriptPathFor,
+  writeDailySummary,
+} from './rotation.js';
+import { buildSeed } from './seed.js';
 
 interface AgentResult {
   ok: boolean;
@@ -29,52 +59,108 @@ interface AgentJson {
   session_id?: string;
 }
 
+interface AgentTurnOptions {
+  /** Resume an existing session. */
+  resume?: string;
+  /** Start a NEW session under this pre-assigned id (rotation's pending row). */
+  sessionId?: string;
+  /** Seed context — appended to the system prompt, never user-visible. */
+  appendSystemPrompt?: string;
+}
+
+interface SessionRow {
+  id: number;
+  session_id: string;
+  started_at: string;
+  turns: number;
+}
+
+export interface SessionManagerHooks {
+  /** Injectable clock — boundary/date tests never need real time. */
+  now?: () => Date;
+  /** Base dir for logs/ + memory/ and the agent child's cwd (default: daemon cwd). */
+  appDir?: string;
+  /** claude CLI projects root for transcript lookup (default ~/.claude/projects). */
+  projectsRoot?: string;
+  /** Deliver the one-line rotation notice (the app wires this to send()). */
+  notify?: (text: string) => Promise<void>;
+}
+
 export interface SessionManager {
   relay(msg: InboundMessage): Promise<AssistantReply>;
+  /** The ritual (queued with relay turns — never mid-turn). Not operator-exposed yet. */
+  rotate(reason: RotationReason): Promise<RotationRecord>;
+  /** Daily-trigger check (interval-driven); resolves true when a rotation ran. */
+  maybeRotateDaily(): Promise<boolean>;
 }
 
 export function createSessionManager(
   db: Database.Database,
   log: Logger,
   config: Config,
+  hooks: SessionManagerHooks = {},
 ): SessionManager {
-  // Serialize concurrent relays: each turn queues behind the previous one.
-  let queue: Promise<unknown> = Promise.resolve();
+  const now = hooks.now ?? ((): Date => new Date());
+  const appDir = hooks.appDir ?? process.cwd();
+  const projectsRoot = hooks.projectsRoot ?? defaultProjectsRoot();
+  const notify = hooks.notify ?? (async (): Promise<void> => undefined);
 
-  const getCurrentSessionId = (): string | null => {
+  // Serialize relays AND rotations: every task queues behind the previous one.
+  let queue: Promise<unknown> = Promise.resolve();
+  const enqueue = <T>(task: () => Promise<T>): Promise<T> => {
+    const run = queue.then(task, task);
+    queue = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  };
+
+  const getCurrentRow = (): SessionRow | null => {
     const row = db
-      .prepare('SELECT session_id FROM sessions WHERE is_current = 1 ORDER BY id DESC LIMIT 1')
-      .get() as { session_id: string } | undefined;
-    return row?.session_id ?? null;
+      .prepare(
+        'SELECT id, session_id, started_at, turns FROM sessions WHERE is_current = 1 ORDER BY id DESC LIMIT 1',
+      )
+      .get() as SessionRow | undefined;
+    return row ?? null;
   };
 
   const persistSessionId = (sessionId: string): void => {
-    const now = new Date().toISOString();
     const updated = db
       .prepare('UPDATE sessions SET session_id = ? WHERE is_current = 1')
       .run(sessionId);
     if (updated.changes === 0) {
       db.prepare('INSERT INTO sessions (session_id, started_at, is_current) VALUES (?, ?, 1)').run(
         sessionId,
-        now,
+        now().toISOString(),
       );
       log.info('conversational session started', { sessionId });
     }
   };
 
   const clearCurrentSession = (): void => {
-    const now = new Date().toISOString();
     db.prepare(
       `UPDATE sessions SET is_current = 0, rotated_at = ?, rotation_reason = 'died' WHERE is_current = 1`,
-    ).run(now);
+    ).run(now().toISOString());
   };
 
-  const runAgentTurn = (text: string, resumeSessionId: string | null): Promise<AgentResult> =>
+  /** Count the completed turn on the current row; returns the new count (null if no row). */
+  const incrementTurns = (): number | null => {
+    const updated = db.prepare('UPDATE sessions SET turns = turns + 1 WHERE is_current = 1').run();
+    if (updated.changes === 0) return null;
+    return getCurrentRow()?.turns ?? null;
+  };
+
+  const runAgentTurn = (text: string, opts: AgentTurnOptions): Promise<AgentResult> =>
     new Promise((resolve) => {
       const args = ['-p', '--output-format', 'json'];
-      if (resumeSessionId !== null) args.push('--resume', resumeSessionId);
+      if (opts.resume !== undefined) args.push('--resume', opts.resume);
+      if (opts.sessionId !== undefined) args.push('--session-id', opts.sessionId);
+      if (opts.appendSystemPrompt !== undefined) {
+        args.push('--append-system-prompt', opts.appendSystemPrompt);
+      }
 
-      const child = spawn(config.agentBin, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+      const child = spawn(config.agentBin, args, { stdio: ['pipe', 'pipe', 'pipe'], cwd: appDir });
       let stdout = '';
       let stderr = '';
       let settled = false;
@@ -150,9 +236,109 @@ export function createSessionManager(
       child.stdin.end();
     });
 
+  /** The ritual itself. Runs INSIDE a queued task — callers go through enqueue(). */
+  const rotateNow = async (reason: RotationReason): Promise<RotationRecord> => {
+    const current = getCurrentRow();
+    if (current === null) {
+      throw new Error('rotate: no current conversational session to rotate');
+    }
+    const rotatedAtDate = now();
+    const rotatedAt = rotatedAtDate.toISOString();
+
+    // 1. Final summary turn against the OUTGOING session. Failure never blocks
+    //    rotation — a wedged session must not prevent its own retirement.
+    const summaryResult = await runAgentTurn(SUMMARY_PROMPT, { resume: current.session_id });
+    let summaryText: string;
+    if (summaryResult.ok) {
+      summaryText = summaryResult.text;
+    } else {
+      log.error('rotation summary turn failed; rotating with a stub summary', {
+        sessionId: current.session_id,
+        reason,
+        error: summaryResult.text,
+      });
+      summaryText =
+        `Summary turn FAILED during rotation (${summaryResult.text}). ` +
+        `No end-of-session summary is available for session ${current.session_id}.`;
+    }
+
+    // 2. Permanent day-summary record.
+    const header =
+      `# Session summary — ${localDateStamp(rotatedAtDate)}\n\n` +
+      `- session: ${current.session_id}\n- reason: ${reason}\n- rotated at: ${rotatedAt}\n\n`;
+    const summaryPath = writeDailySummary(appDir, rotatedAtDate, `${header}${summaryText}\n`);
+
+    // 3. Durable-memory promotion (may be a no-op when the block is empty).
+    const durable = extractDurableMemory(summaryText);
+    const promotedPath = promoteDurableMemory(appDir, rotatedAtDate, rotatedAt, durable);
+
+    // 4. Transcript location — claude CLI convention; tolerate absence (stub
+    //    and test sessions have none).
+    const candidate = transcriptPathFor(projectsRoot, appDir, current.session_id);
+    const transcriptPath = existsSync(candidate) ? candidate : '';
+    if (transcriptPath === '') {
+      log.info('no transcript found for the rotated session (tolerated)', {
+        sessionId: current.session_id,
+        candidate,
+      });
+    }
+    recordTranscriptLocation(appDir, rotatedAt, current.session_id, transcriptPath);
+
+    // 5. Flip the outgoing row; a fresh pending row (pre-assigned id, turns=0)
+    //    becomes current — the next relay() starts it seeded.
+    const newSessionId = randomUUID();
+    db.transaction(() => {
+      db.prepare(
+        'UPDATE sessions SET is_current = 0, rotated_at = ?, rotation_reason = ? WHERE id = ?',
+      ).run(rotatedAt, reason, current.id);
+      db.prepare(
+        'INSERT INTO sessions (session_id, started_at, is_current, turns) VALUES (?, ?, 1, 0)',
+      ).run(newSessionId, rotatedAt);
+    })();
+
+    const record: RotationRecord = {
+      schema: 1,
+      closedSessionId: current.session_id,
+      newSessionId,
+      reason,
+      summaryPath,
+      transcriptPath,
+      rotatedAt,
+    };
+    log.info('session rotated', { ...record, memoryPromoted: promotedPath !== null });
+
+    // Rotation notice — best-effort, never blocks the ritual.
+    try {
+      await notify(
+        `Rotated the conversational session (${reason}); summary at ${relative(appDir, summaryPath)}`,
+      );
+    } catch (err) {
+      log.error('rotation notice delivery failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    return record;
+  };
+
   const runTurn = async (msg: InboundMessage): Promise<AssistantReply> => {
-    const resumeSessionId = getCurrentSessionId();
-    const result = await runAgentTurn(msg.text, resumeSessionId);
+    const current = getCurrentRow();
+
+    // A row with turns=0 is a rotation-created PENDING session: start it under
+    // its pre-assigned id, seeded. No row at all is a brand-new session (also
+    // seeded when rotation is enabled). Otherwise resume — Stage 1 behavior.
+    const opts: AgentTurnOptions = {};
+    if (current === null || (config.rotationEnabled && current.turns === 0)) {
+      if (current !== null) opts.sessionId = current.session_id;
+      if (config.rotationEnabled) {
+        const seed = buildSeed(appDir, config.seedMaxBytes);
+        if (seed !== '') opts.appendSystemPrompt = seed;
+      }
+    } else {
+      opts.resume = current.session_id;
+    }
+
+    const result = await runAgentTurn(msg.text, opts);
 
     if (!result.ok) {
       // Session died (or never started) mid-turn: error reply, never silence.
@@ -162,7 +348,7 @@ export function createSessionManager(
         schema: 1,
         text: `The assistant session hit an error on this turn (${result.text}). The next message will start a fresh session.`,
         files: [],
-        sessionId: resumeSessionId ?? '',
+        sessionId: current?.session_id ?? '',
         rotated: false,
       };
     }
@@ -171,23 +357,54 @@ export function createSessionManager(
       persistSessionId(result.sessionId);
     }
 
+    // Size-cap trigger: count the completed turn; when it pushes PAST the cap,
+    // rotate right after the turn (still inside this queued task — never mid-turn).
+    const turns = incrementTurns();
+    let rotated = false;
+    if (config.rotationEnabled && turns !== null && turns > config.sizeCapTurns) {
+      try {
+        await rotateNow('size-cap');
+        rotated = true;
+      } catch (err) {
+        log.error('size-cap rotation failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
     return {
       schema: 1,
       text: result.text,
       files: [],
-      sessionId: result.sessionId ?? resumeSessionId ?? '',
-      rotated: false,
+      sessionId: result.sessionId ?? current?.session_id ?? '',
+      rotated,
     };
   };
 
   return {
     relay(msg: InboundMessage): Promise<AssistantReply> {
-      const turn = queue.then(
-        () => runTurn(msg),
-        () => runTurn(msg),
-      );
-      queue = turn.catch(() => undefined);
-      return turn;
+      return enqueue(() => runTurn(msg));
+    },
+
+    rotate(reason: RotationReason): Promise<RotationRecord> {
+      return enqueue(() => rotateNow(reason));
+    },
+
+    maybeRotateDaily(): Promise<boolean> {
+      if (!config.rotationEnabled) return Promise.resolve(false);
+      // Check + rotate atomically on the queue so an in-flight turn (or another
+      // rotation) finishes first and the conditions are re-read after it.
+      return enqueue(async () => {
+        const current = getCurrentRow();
+        // Nothing to rotate, or an unused pending session (rotating an empty
+        // session would just churn summaries).
+        if (current === null || current.turns === 0) return false;
+        if (!isPastDailyBoundary(now(), config.rotateHour, new Date(current.started_at))) {
+          return false;
+        }
+        await rotateNow('daily');
+        return true;
+      });
     },
   };
 }
