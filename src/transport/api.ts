@@ -87,14 +87,30 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
     const path = url.pathname;
     const method = req.method ?? '';
 
-    // POST /api/v1/jobs — body is the job-lifecycle submit shape; submit()
-    // owns validation (JobError → 400 via the catch below).
+    // POST /api/v1/jobs — body is the job-lifecycle submit shape, OR (Stage 6,
+    // the contract's reserved additive form) `{ type, params }`, discriminated
+    // by the presence of `params`. submit()/submitType() own validation
+    // (JobError → 400 via the catch below, including unknown type + the
+    // NIGHTSHIFT_TYPES_ENABLED kill-switch).
     if (method === 'POST' && path === '/api/v1/jobs') {
       let body: unknown;
       try {
         body = await readJsonBody(req);
       } catch {
         respond(res, 400, { ok: false, error: 'invalid JSON body' });
+        return;
+      }
+      if (typeof body === 'object' && body !== null && 'params' in body) {
+        const typed = body as { type?: unknown; params?: unknown };
+        if (typeof typed.type !== 'string' || typed.type === '') {
+          respond(res, 400, {
+            ok: false,
+            error: 'typed submit requires "type" (non-empty string) alongside "params"',
+          });
+          return;
+        }
+        const job = jobs.submitType(typed.type, typed.params);
+        respond(res, 200, { ok: true, job });
         return;
       }
       const job = jobs.submit(body as JobSubmit);

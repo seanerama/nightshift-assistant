@@ -71,9 +71,10 @@ describe('nightshift CLI (child process)', () => {
         apiToken: TOKEN,
         jobsEnabled: true,
         jobKillGraceSec: 1,
+        typesEnabled: true, // Stage 6 round-trip tests; raw submits unaffected
       }),
       makeTestLogger(),
-      { appDir: tmpDir },
+      { appDir: tmpDir, home: tmpDir },
     );
     port = await app.listen();
     cliEnv = {
@@ -119,6 +120,48 @@ describe('nightshift CLI (child process)', () => {
     const killed = await cli('kill', sleeperId);
     expect(killed.code).toBe(0);
     expect(killed.stdout).toContain('status:    killed');
+  });
+
+  it('typed submit round-trip: --type story --params renders through the registry', async () => {
+    const submitted = await cli(
+      'submit',
+      '--type',
+      'story',
+      '--params',
+      '{"idea": "MODE=success bedtime turtles"}',
+      '--json',
+    );
+    expect(submitted.stderr).toBe('');
+    expect(submitted.code).toBe(0);
+    const { ok, job } = JSON.parse(submitted.stdout) as {
+      ok: boolean;
+      job: { id: string; type: string; workdir: string };
+    };
+    expect(ok).toBe(true);
+    expect(job.type).toBe('story');
+    expect(job.workdir).toBe(join(tmpDir, 'projects', 'mode-success-bedtime-turtles'));
+    await waitFor(() => app.jobs.get(job.id)?.status === 'succeeded');
+
+    const one = await cli('job', job.id);
+    expect(one.stdout).toContain('type:      story');
+  });
+
+  it('typed submit argument errors exit 1 with a clear message', async () => {
+    const badJson = await cli('submit', '--type', 'story', '--params', '{nope');
+    expect(badJson.code).toBe(1);
+    expect(badJson.stderr).toContain('--params is not valid JSON');
+
+    const noType = await cli('submit', '--params', '{"idea": "x"}');
+    expect(noType.code).toBe(1);
+    expect(noType.stderr).toContain('submit --params requires --type');
+
+    const mixed = await cli('submit', '--type', 'story', '--params', '{}', '--title', 'x');
+    expect(mixed.code).toBe(1);
+    expect(mixed.stderr).toContain('cannot be combined with --title');
+
+    const unknownType = await cli('submit', '--type', 'research', '--params', '{}');
+    expect(unknownType.code).toBe(1);
+    expect(unknownType.stderr).toContain('unknown job type: research');
   });
 
   it('--json emits the raw API JSON envelope', async () => {
