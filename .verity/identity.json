@@ -1,0 +1,8 @@
+{
+  "version": "1.0",
+  "name": "Nightshift Assistant",
+  "slug": "nightshift-assistant",
+  "owner": "seanerama",
+  "image_prefix": "ghcr.io/seanerama/nightshift-assistant",
+  "locked_at": "2026-07-06T18:15:58.693Z"
+}
