@@ -23,9 +23,16 @@ process.stdin.on('data', (d) => {
 process.stdin.on('end', () => {
   const args = process.argv.slice(2);
   if (process.env.AGENT_STUB_LOG) {
+    // apiToken: what the CONVERSATIONAL spawn env carried (Stage 5 gating
+    // tests) — null when the daemon did not inject NIGHTSHIFT_API_TOKEN.
     fs.appendFileSync(
       process.env.AGENT_STUB_LOG,
-      `${JSON.stringify({ args, input, pid: process.pid })}\n`,
+      `${JSON.stringify({
+        args,
+        input,
+        pid: process.pid,
+        apiToken: process.env.NIGHTSHIFT_API_TOKEN ?? null,
+      })}\n`,
     );
   }
 

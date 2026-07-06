@@ -17,6 +17,7 @@ import {
   type SessionManager,
   type SessionManagerHooks,
 } from './session/manager.js';
+import { createApiHandler } from './transport/api.js';
 import { createSender } from './transport/send.js';
 import { createTransportServer } from './transport/server.js';
 import { createWebexClient } from './transport/webex.js';
@@ -35,9 +36,9 @@ export function appVersion(): string {
 export interface App {
   server: Server;
   db: Database.Database;
-  /** Exposed for later stages (manual rotation) — not operator-exposed yet. */
+  /** Session manager — operator/assistant-exposed via POST /api/v1/session/rotate (Stage 5). */
   sessions: SessionManager;
-  /** Job runner engine (Stage 4) — assistant-tool exposure is the capability-wiring stage. */
+  /** Job runner (Stage 4) — operator/assistant-exposed via /api/v1/jobs* (Stage 5). */
   jobs: JobRunner;
   /** Listen on 127.0.0.1 ONLY (ADR 0001: loopback bind; tunnel exposes /webhook). */
   listen(): Promise<number>;
@@ -99,6 +100,9 @@ export function createApp(
       lastOwnerRoomId = roomId;
     },
     version: appVersion(),
+    // Control API (Stage 5): mounted on the same loopback server; the handler
+    // owns its own kill-switch (403 dark by default) and bearer auth.
+    api: createApiHandler({ config, log, jobs, sessions, version: appVersion() }),
   });
 
   // Daily-rotation trigger: minimal in-daemon interval check (no external

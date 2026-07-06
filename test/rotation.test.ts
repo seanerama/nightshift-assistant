@@ -40,6 +40,8 @@ const SUMMARY_WITH_DURABLE = [
 interface StubInvocation {
   args: string[];
   input: string;
+  /** NIGHTSHIFT_API_TOKEN as seen by the spawned agent (null = not in its env). */
+  apiToken: string | null;
 }
 
 interface DbSessionRow {
@@ -113,6 +115,8 @@ describe('rotation ritual (session-manager level)', () => {
     delete process.env.AGENT_STUB_MODE;
     delete process.env.AGENT_STUB_REPLY;
     delete process.env.AGENT_STUB_DELAY_MS;
+    // Ensure the flag-off env assertion sees the daemon's own env clean.
+    delete process.env.NIGHTSHIFT_API_TOKEN;
 
     db = openDatabase(':memory:');
     migrate(db, MIGRATIONS_DIR);
@@ -441,7 +445,10 @@ describe('rotation ritual (session-manager level)', () => {
       mkdirSync(join(appDir, 'logs', 'daily'), { recursive: true });
       writeFileSync(join(appDir, 'logs', 'daily', '2026-07-05.md'), 'old summary', 'utf8');
 
-      const mgr = makeManager(); // rotationEnabled: false (makeConfig default)
+      // Stage 5 guard: a configured token must NOT surface anywhere while the
+      // control flag stays off (makeConfig default) — no --allowedTools on
+      // argv, no NIGHTSHIFT_API_TOKEN in the spawned session's env.
+      const mgr = makeManager({ apiToken: 'configured-but-control-off' });
       await mgr.relay(inbound('first'));
       await mgr.relay(inbound('second'));
 
@@ -454,6 +461,7 @@ describe('rotation ritual (session-manager level)', () => {
         '--resume',
         'sess-canned-1',
       ]);
+      expect(calls.map((c) => c.apiToken)).toEqual([null, null]);
     });
 
     it('no trigger fires: neither size-cap nor the daily check rotates', async () => {
