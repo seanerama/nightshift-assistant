@@ -46,6 +46,8 @@ describe('loadConfig', () => {
     expect(config.maxJobs).toBe(2);
     expect(config.jobRetryCap).toBe(2);
     expect(config.jobKillGraceSec).toBe(10);
+    expect(config.controlEnabled).toBe(false); // control surface ships dark
+    expect(config.apiToken).toBe('');
   });
 
   it('enables rotation only on exactly "true" and fails fast on garbage', () => {
@@ -105,6 +107,37 @@ describe('loadConfig', () => {
     expect(() => loadConfig({ ...FULL_ENV, NIGHTSHIFT_JOB_KILL_GRACE_SEC: 'soon' })).toThrow(
       ConfigError,
     );
+  });
+
+  it('enables the control surface only on exactly "true" and fails fast on garbage', () => {
+    const enabled = loadConfig({
+      ...FULL_ENV,
+      NIGHTSHIFT_CONTROL_ENABLED: 'true',
+      NIGHTSHIFT_API_TOKEN: 'tok',
+    });
+    expect(enabled.controlEnabled).toBe(true);
+    expect(enabled.apiToken).toBe('tok');
+    expect(loadConfig({ ...FULL_ENV, NIGHTSHIFT_CONTROL_ENABLED: 'false' }).controlEnabled).toBe(
+      false,
+    );
+    expect(() => loadConfig({ ...FULL_ENV, NIGHTSHIFT_CONTROL_ENABLED: 'TRUE' })).toThrow(
+      ConfigError,
+    );
+    expect(() => loadConfig({ ...FULL_ENV, NIGHTSHIFT_CONTROL_ENABLED: 'on' })).toThrow(
+      ConfigError,
+    );
+  });
+
+  it('requires a non-empty NIGHTSHIFT_API_TOKEN when the control surface is enabled', () => {
+    expect(() => loadConfig({ ...FULL_ENV, NIGHTSHIFT_CONTROL_ENABLED: 'true' })).toThrow(
+      /NIGHTSHIFT_API_TOKEN/,
+    );
+    expect(() =>
+      loadConfig({ ...FULL_ENV, NIGHTSHIFT_CONTROL_ENABLED: 'true', NIGHTSHIFT_API_TOKEN: '' }),
+    ).toThrow(ConfigError);
+    // Control off: a set token is carried but not required.
+    expect(loadConfig({ ...FULL_ENV, NIGHTSHIFT_API_TOKEN: 'tok' }).apiToken).toBe('tok');
+    expect(loadConfig({ ...FULL_ENV }).controlEnabled).toBe(false);
   });
 
   it('honors the seam overrides (WEBEX_API_BASE, NIGHTSHIFT_AGENT_BIN)', () => {

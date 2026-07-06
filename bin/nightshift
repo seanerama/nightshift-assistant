@@ -1,0 +1,263 @@
+#!/usr/bin/env node
+/**
+ * nightshift — the 1:1 human/agent face of the control API
+ * (contracts/control-api.md, frozen v1). Zero dependencies: global fetch
+ * against http://127.0.0.1:<port>/api/v1/. The conversational session invokes
+ * its tools ONLY through this CLI; the operator runs the same commands over SSH.
+ *
+ * Auth/port: NIGHTSHIFT_API_TOKEN + NIGHTSHIFT_PORT from the environment,
+ * falling back to the app dir's .env (the dir above this script's real path —
+ * symlinks resolved, so ~/.local/bin/nightshift finds the deploy's .env).
+ * Workers never have the token (default-deny env), so they cannot use this.
+ *
+ * Exit codes (contract): 0 on ok:true, 1 otherwise. --json prints the raw API
+ * JSON body. No top-level import/require: the script stays runnable whether
+ * Node classifies it as ESM (in-repo, package.json type:module) or CommonJS
+ * (copied elsewhere) — dynamic import() is legal in both.
+ */
+'use strict';
+
+const USAGE = `nightshift — control the Nightshift Assistant daemon (loopback API)
+
+Usage:
+  nightshift submit --type <type> --title <title> --instruction <text> --workdir <dir>
+                                   Submit a background job
+  nightshift jobs [--status <s>]   List jobs (status: queued|running|succeeded|failed|killed)
+  nightshift job <id>              Show one job
+  nightshift kill <id>             Kill a job (SIGTERM, then SIGKILL)
+  nightshift rotate                Rotate the conversational session (manual)
+  nightshift status                Daemon status (version, uptime, session, job counts)
+
+Options:
+  --json                           Print the raw API JSON response
+  -h, --help                       Show this help
+
+Environment:
+  NIGHTSHIFT_API_TOKEN             Bearer token for the API (required)
+  NIGHTSHIFT_PORT                  Daemon port (default 3777)
+  Both fall back to the app directory's .env when unset.
+
+Exit codes: 0 when the API replies ok:true; 1 on any error.`;
+
+/** Print an error and exit 1 — the single failure path. */
+function fail(message) {
+  process.stderr.write(`error: ${message}\n`);
+  process.exit(1);
+}
+
+/** Minimal .env parser: KEY=value lines, # comments, optional single/double quotes. */
+function parseEnvFile(text) {
+  const out = {};
+  for (const rawLine of text.split('\n')) {
+    const line = rawLine.trim();
+    if (line === '' || line.startsWith('#')) continue;
+    const eq = line.indexOf('=');
+    if (eq <= 0) continue;
+    const key = line.slice(0, eq).trim();
+    let value = line.slice(eq + 1).trim();
+    if (
+      (value.startsWith('"') && value.endsWith('"') && value.length >= 2) ||
+      (value.startsWith("'") && value.endsWith("'") && value.length >= 2)
+    ) {
+      value = value.slice(1, -1);
+    }
+    out[key] = value;
+  }
+  return out;
+}
+
+/** Token + port from env, then the app dir's .env (script realpath's parent dir). */
+async function resolveConnection() {
+  let token = process.env.NIGHTSHIFT_API_TOKEN;
+  let port = process.env.NIGHTSHIFT_PORT;
+  let envPath = '<app dir>/.env';
+  if (token === undefined || token === '' || port === undefined || port === '') {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    try {
+      const script = fs.realpathSync(process.argv[1]);
+      envPath = path.join(path.dirname(path.dirname(script)), '.env');
+      const fileEnv = parseEnvFile(fs.readFileSync(envPath, 'utf8'));
+      if (token === undefined || token === '') token = fileEnv.NIGHTSHIFT_API_TOKEN;
+      if (port === undefined || port === '') port = fileEnv.NIGHTSHIFT_PORT;
+    } catch {
+      // No .env — the explicit checks below report what is missing.
+    }
+  }
+  if (token === undefined || token === '') {
+    fail(`NIGHTSHIFT_API_TOKEN is not set (checked the environment and ${envPath})`);
+  }
+  return { token, port: port === undefined || port === '' ? '3777' : port };
+}
+
+/** One API round-trip. Network/parse failures exit 1 here; HTTP status is NOT an exit signal — ok:true is. */
+async function callApi(conn, method, pathname, body) {
+  const url = `http://127.0.0.1:${conn.port}${pathname}`;
+  let res;
+  try {
+    res = await fetch(url, {
+      method,
+      headers: {
+        Authorization: `Bearer ${conn.token}`,
+        ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+      },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+  } catch (err) {
+    fail(
+      `cannot reach the nightshift daemon at ${url} (${err.message}) — is the service running, and is NIGHTSHIFT_PORT right?`,
+    );
+  }
+  const text = await res.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    fail(`daemon returned non-JSON (HTTP ${res.status}): ${text.slice(0, 200)}`);
+  }
+}
+
+/** Readable one-job block. */
+function formatJob(job) {
+  const lines = [
+    `id:        ${job.id}`,
+    `status:    ${job.status}`,
+    `type:      ${job.type}`,
+    `title:     ${job.title}`,
+    `workdir:   ${job.workdir}`,
+    `attempts:  ${job.attempts}`,
+    `created:   ${job.createdAt}`,
+  ];
+  if (job.startedAt) lines.push(`started:   ${job.startedAt}`);
+  if (job.endedAt) lines.push(`ended:     ${job.endedAt}`);
+  if (job.pid !== null && job.pid !== undefined) lines.push(`pid:       ${job.pid}`);
+  if (job.retryOf) lines.push(`retry of:  ${job.retryOf}`);
+  lines.push(`log:       ${job.logPath}`);
+  return lines.join('\n');
+}
+
+/** Readable jobs table. */
+function formatJobList(jobsList) {
+  if (jobsList.length === 0) return '(no jobs)';
+  const rows = jobsList.map((j) => [j.id, j.status, j.type, String(j.attempts), j.title]);
+  const header = ['ID', 'STATUS', 'TYPE', 'ATT', 'TITLE'];
+  const widths = header.map((h, i) => Math.max(h.length, ...rows.map((r) => r[i].length)));
+  const line = (cols) => cols.map((c, i) => c.padEnd(widths[i])).join('  ');
+  return [line(header), ...rows.map(line)].join('\n');
+}
+
+function formatStatus(s) {
+  const j = s.jobs;
+  return [
+    `version:   ${s.version}`,
+    `uptime:    ${s.uptimeSec}s`,
+    `session:   ${s.session.id ?? '(none yet)'} (${s.session.turns} turns)`,
+    `jobs:      queued ${j.queued}, running ${j.running}, succeeded ${j.succeeded}, failed ${j.failed}, killed ${j.killed}`,
+    `rotation:  ${s.rotation.enabled ? 'enabled' : 'disabled'}`,
+    `job runner: ${s.jobsEnabled ? 'enabled' : 'disabled'}`,
+  ].join('\n');
+}
+
+/** Split argv into { command, positionals, options, json }; --help handled here. */
+function parseArgs(argv) {
+  const takesValue = new Set(['--type', '--title', '--instruction', '--workdir', '--status']);
+  const options = {};
+  const positionals = [];
+  let json = false;
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === '--json') json = true;
+    else if (arg === '-h' || arg === '--help') {
+      process.stdout.write(`${USAGE}\n`);
+      process.exit(0);
+    } else if (takesValue.has(arg)) {
+      const value = argv[i + 1];
+      if (value === undefined) fail(`${arg} requires a value\n\n${USAGE}`);
+      options[arg.slice(2)] = value;
+      i += 1;
+    } else if (arg.startsWith('-')) {
+      fail(`unknown option: ${arg}\n\n${USAGE}`);
+    } else {
+      positionals.push(arg);
+    }
+  }
+  const command = positionals.shift();
+  return { command, positionals, options, json };
+}
+
+/** Run the parsed command; returns { result, render } (render = human formatter). */
+async function runCommand(conn, parsed) {
+  const { command, positionals, options } = parsed;
+  switch (command) {
+    case 'submit': {
+      for (const field of ['type', 'title', 'instruction', 'workdir']) {
+        if (options[field] === undefined || options[field] === '') {
+          fail(`submit requires --${field}\n\n${USAGE}`);
+        }
+      }
+      const result = await callApi(conn, 'POST', '/api/v1/jobs', {
+        schema: 1,
+        type: options.type,
+        title: options.title,
+        instruction: options.instruction,
+        workdir: options.workdir,
+        env: 'minimal',
+      });
+      return { result, render: (r) => `Job submitted.\n${formatJob(r.job)}` };
+    }
+    case 'jobs': {
+      const query = options.status === undefined ? '' : `?status=${encodeURIComponent(options.status)}`;
+      const result = await callApi(conn, 'GET', `/api/v1/jobs${query}`);
+      return { result, render: (r) => formatJobList(r.jobs) };
+    }
+    case 'job': {
+      const id = positionals[0];
+      if (id === undefined) fail(`job requires an id\n\n${USAGE}`);
+      const result = await callApi(conn, 'GET', `/api/v1/jobs/${encodeURIComponent(id)}`);
+      return { result, render: (r) => formatJob(r.job) };
+    }
+    case 'kill': {
+      const id = positionals[0];
+      if (id === undefined) fail(`kill requires an id\n\n${USAGE}`);
+      const result = await callApi(conn, 'POST', `/api/v1/jobs/${encodeURIComponent(id)}/kill`);
+      return { result, render: (r) => `Job killed.\n${formatJob(r.job)}` };
+    }
+    case 'rotate': {
+      const result = await callApi(conn, 'POST', '/api/v1/session/rotate', { reason: 'manual' });
+      return {
+        result,
+        render: (r) =>
+          `Rotated: ${r.rotation.closedSessionId} -> ${r.rotation.newSessionId} (${r.rotation.reason})\nSummary: ${r.rotation.summaryPath}`,
+      };
+    }
+    case 'status': {
+      const result = await callApi(conn, 'GET', '/api/v1/status');
+      return { result, render: formatStatus };
+    }
+    case undefined:
+      fail(`missing command\n\n${USAGE}`);
+      break;
+    default:
+      fail(`unknown command: ${command}\n\n${USAGE}`);
+  }
+  return { result: { ok: false, error: 'unreachable' }, render: () => '' };
+}
+
+async function main() {
+  const parsed = parseArgs(process.argv.slice(2));
+  if (parsed.command === undefined && !parsed.json) fail(`missing command\n\n${USAGE}`);
+  const conn = await resolveConnection();
+  const { result, render } = await runCommand(conn, parsed);
+
+  if (parsed.json) {
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+  } else if (result.ok === true) {
+    process.stdout.write(`${render(result)}\n`);
+  } else {
+    process.stderr.write(`error: ${result.error ?? 'unknown error'}\n`);
+  }
+  process.exit(result.ok === true ? 0 : 1);
+}
+
+main().catch((err) => {
+  fail(err && err.message ? err.message : String(err));
+});

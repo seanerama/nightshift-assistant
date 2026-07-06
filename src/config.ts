@@ -43,6 +43,19 @@ export interface Config {
   jobRetryCap: number;
   /** Seconds between kill()'s SIGTERM and the SIGKILL follow-up. */
   jobKillGraceSec: number;
+  /**
+   * Master switch for the control surface (Stage 5): /api/v1/, the nightshift
+   * CLI, and the conversational session's Bash(nightshift *) tool access.
+   * Default OFF — with it unset, /api/v1/ returns 403 and session spawns are
+   * byte-identical to Stage 4.
+   */
+  controlEnabled: boolean;
+  /**
+   * Per-install bearer token required on every /api/v1/ request (fail closed:
+   * empty → every request 401s). Required non-empty when control is enabled.
+   * Never enters workerEnv() — only the conversational session's spawn env.
+   */
+  apiToken: string;
 }
 
 export class ConfigError extends Error {}
@@ -148,6 +161,28 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     );
   }
 
+  // Control-surface kill-switch: same discipline as rotation/jobs — only
+  // exactly "true" enables; "false"/unset stay dark; anything else fails fast.
+  const controlRaw = env.NIGHTSHIFT_CONTROL_ENABLED;
+  if (
+    controlRaw !== undefined &&
+    controlRaw !== '' &&
+    controlRaw !== 'true' &&
+    controlRaw !== 'false'
+  ) {
+    throw new ConfigError(
+      `NIGHTSHIFT_CONTROL_ENABLED must be "true" or "false" (got: ${controlRaw})`,
+    );
+  }
+  const controlEnabled = controlRaw === 'true';
+
+  const apiToken = env.NIGHTSHIFT_API_TOKEN ?? '';
+  if (controlEnabled && apiToken === '') {
+    throw new ConfigError(
+      'NIGHTSHIFT_API_TOKEN must be set (non-empty) when NIGHTSHIFT_CONTROL_ENABLED=true — the control API fails closed without it',
+    );
+  }
+
   return {
     webexBotToken,
     webexWebhookSecret,
@@ -165,5 +200,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     maxJobs,
     jobRetryCap,
     jobKillGraceSec,
+    controlEnabled,
+    apiToken,
   };
 }

@@ -390,15 +390,19 @@ describe('job runner', () => {
       });
     });
 
-    it('a spawned worker sees the allow-list but NEVER the Webex credentials', async () => {
+    it('a spawned worker sees the allow-list but NEVER the Webex credentials or the API token', async () => {
       const saved: Record<string, string | undefined> = {
         WEBEX_BOT_TOKEN: process.env.WEBEX_BOT_TOKEN,
         WEBEX_WEBHOOK_SECRET: process.env.WEBEX_WEBHOOK_SECRET,
         WEBEX_OWNER_PERSON_ID: process.env.WEBEX_OWNER_PERSON_ID,
+        NIGHTSHIFT_API_TOKEN: process.env.NIGHTSHIFT_API_TOKEN,
       };
       process.env.WEBEX_BOT_TOKEN = 'live-secret-token';
       process.env.WEBEX_WEBHOOK_SECRET = 'live-secret-hmac';
       process.env.WEBEX_OWNER_PERSON_ID = 'live-owner-id';
+      // Stage 5 invariant: the control-API token must never reach a worker —
+      // a worker must not be able to drive its own daemon (ADR 0007).
+      process.env.NIGHTSHIFT_API_TOKEN = 'live-api-token';
       try {
         const runner = makeRunner();
         const record = submit(runner, 'MODE=dump-env');
@@ -412,6 +416,7 @@ describe('job runner', () => {
         expect(dumped.WEBEX_BOT_TOKEN).toBeUndefined();
         expect(dumped.WEBEX_WEBHOOK_SECRET).toBeUndefined();
         expect(dumped.WEBEX_OWNER_PERSON_ID).toBeUndefined();
+        expect(dumped.NIGHTSHIFT_API_TOKEN).toBeUndefined();
         // Nothing outside the allow-list leaks at all.
         const allowed = new Set([
           'PATH',

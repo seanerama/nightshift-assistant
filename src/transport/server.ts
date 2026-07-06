@@ -25,6 +25,11 @@ export interface TransportDeps {
   /** Called with the owner's roomId on every authorized message (notice routing). */
   onOwnerRoom?(roomId: string): void;
   version: string;
+  /**
+   * Handler for /api/v1/* (contracts/control-api.md) — mounted here so the
+   * loopback-only bind is inherited. Owns its own kill-switch/auth/404s.
+   */
+  api?(req: IncomingMessage, res: ServerResponse): void;
 }
 
 interface WebhookBody {
@@ -49,7 +54,8 @@ function verifySignature(rawBody: Buffer, header: string | undefined, secret: st
   return timingSafeEqual(provided, expected);
 }
 
-function readRawBody(req: IncomingMessage): Promise<Buffer> {
+/** Bounded body reader — shared with the /api/v1 handler (api.ts). */
+export function readRawBody(req: IncomingMessage): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const parts: Buffer[] = [];
     let size = 0;
@@ -67,14 +73,15 @@ function readRawBody(req: IncomingMessage): Promise<Buffer> {
   });
 }
 
-function respond(res: ServerResponse, status: number, body: Record<string, unknown>): void {
+/** JSON responder — shared with the /api/v1 handler (api.ts). */
+export function respond(res: ServerResponse, status: number, body: Record<string, unknown>): void {
   const payload = JSON.stringify(body);
   res.writeHead(status, { 'Content-Type': 'application/json' });
   res.end(payload);
 }
 
 export function createTransportServer(deps: TransportDeps): Server {
-  const { config, log, webex, sender, relay, onOwnerRoom, version } = deps;
+  const { config, log, webex, sender, relay, onOwnerRoom, version, api } = deps;
   const dedup = new MessageDedup();
   const startedAt = Date.now();
 
@@ -186,6 +193,10 @@ export function createTransportServer(deps: TransportDeps): Server {
         version,
         uptimeSec: Math.floor((Date.now() - startedAt) / 1000),
       });
+      return;
+    }
+    if (api !== undefined && url?.startsWith('/api/v1/') === true) {
+      api(req, res);
       return;
     }
     if (req.method === 'POST' && url === '/webhook') {

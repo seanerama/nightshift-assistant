@@ -44,6 +44,36 @@ import {
 } from './rotation.js';
 import { buildSeed } from './seed.js';
 
+/**
+ * Bash permission rule granting the conversational session EXACTLY the
+ * nightshift CLI (contracts/control-api.md: "Bash(nightshift *) allowed at
+ * spawn"). Matcher syntax VERIFIED against the installed claude CLI v2.1.201
+ * (2026-07-06): `claude --help` documents the space form — `--allowedTools
+ * "Bash(git *) Edit"` — and a headless probe confirmed behavior: with
+ * `--allowedTools "Bash(git *)"` the command `git --version` executed with no
+ * permission denial, while the identical prompt WITHOUT the flag was denied
+ * (`permission_denials` non-empty). The colon form "Bash(git:*)" also passed,
+ * but the space form is what both the CLI help and the frozen contract spell —
+ * re-verify empirically before ever changing it.
+ */
+export const NIGHTSHIFT_TOOL_RULE = 'Bash(nightshift *)';
+
+/**
+ * Fixed capability preamble (Stage 5): appended to the system prompt of every
+ * NEW conversational session when the control surface is enabled, telling the
+ * session what its hands are and when to use them. Delivered on the same
+ * --append-system-prompt path as the rotation seed — never user-visible.
+ */
+export const CONTROL_PREAMBLE = [
+  'You have the `nightshift` CLI available through your Bash tool (the only Bash you are permitted). It is your control surface for the Nightshift daemon:',
+  '- `nightshift submit --type <type> --title <title> --instruction <text> --workdir <dir>` — dispatch long-running work (builds, pipelines, research) as a background job. NEVER run long work inline in this conversation; always submit a job and reply immediately.',
+  '- `nightshift jobs [--status <status>]` / `nightshift job <id>` — list jobs or inspect one.',
+  '- `nightshift kill <id>` — stop a job.',
+  '- `nightshift rotate` — rotate this conversational session (manual).',
+  '- `nightshift status` — daemon status (version, uptime, session, job counts).',
+  'Add `--json` to any command for raw JSON. Job completion notices arrive in Webex on their own — do not poll or wait for jobs to finish.',
+].join('\n');
+
 interface AgentResult {
   ok: boolean;
   text: string;
@@ -94,6 +124,8 @@ export interface SessionManager {
   rotate(reason: RotationReason): Promise<RotationRecord>;
   /** Daily-trigger check (interval-driven); resolves true when a rotation ran. */
   maybeRotateDaily(): Promise<boolean>;
+  /** Current-session snapshot for GET /api/v1/status (additive, read-only). */
+  info(): { id: string | null; turns: number };
 }
 
 export function createSessionManager(
@@ -158,13 +190,25 @@ export function createSessionManager(
   const runAgentTurn = (text: string, opts: AgentTurnOptions): Promise<AgentResult> =>
     new Promise((resolve) => {
       const args = ['-p', '--output-format', 'json'];
+      // Stage 5, gated on the control flag: the tool rule on argv and the API
+      // token in the env — this ONE spawn site only (workers go through
+      // workerEnv(), which must never carry the token). With the flag off both
+      // spawn calls below are byte-identical to Stage 4 (no extra args, no env
+      // option — the child inherits process.env exactly as before).
+      if (config.controlEnabled) args.push('--allowedTools', NIGHTSHIFT_TOOL_RULE);
       if (opts.resume !== undefined) args.push('--resume', opts.resume);
       if (opts.sessionId !== undefined) args.push('--session-id', opts.sessionId);
       if (opts.appendSystemPrompt !== undefined) {
         args.push('--append-system-prompt', opts.appendSystemPrompt);
       }
 
-      const child = spawn(config.agentBin, args, { stdio: ['pipe', 'pipe', 'pipe'], cwd: appDir });
+      const child = config.controlEnabled
+        ? spawn(config.agentBin, args, {
+            stdio: ['pipe', 'pipe', 'pipe'],
+            cwd: appDir,
+            env: { ...process.env, NIGHTSHIFT_API_TOKEN: config.apiToken },
+          })
+        : spawn(config.agentBin, args, { stdio: ['pipe', 'pipe', 'pipe'], cwd: appDir });
       let stdout = '';
       let stderr = '';
       let settled = false;
@@ -338,10 +382,16 @@ export function createSessionManager(
     const opts: AgentTurnOptions = {};
     if (current === null || pending) {
       if (current !== null) opts.sessionId = current.session_id;
+      // System-prompt extras for a NEW session, each behind its own flag:
+      // the Stage 5 capability preamble (control), then the rotation seed.
+      // Both off → no --append-system-prompt at all (Stage 1 spawn shape).
+      const parts: string[] = [];
+      if (config.controlEnabled) parts.push(CONTROL_PREAMBLE);
       if (config.rotationEnabled) {
         const seed = buildSeed(appDir, config.seedMaxBytes);
-        if (seed !== '') opts.appendSystemPrompt = seed;
+        if (seed !== '') parts.push(seed);
       }
+      if (parts.length > 0) opts.appendSystemPrompt = parts.join('\n\n');
     } else {
       opts.resume = current.session_id;
     }
@@ -398,6 +448,11 @@ export function createSessionManager(
 
     rotate(reason: RotationReason): Promise<RotationRecord> {
       return enqueue(() => rotateNow(reason));
+    },
+
+    info(): { id: string | null; turns: number } {
+      const current = getCurrentRow();
+      return { id: current?.session_id ?? null, turns: current?.turns ?? 0 };
     },
 
     maybeRotateDaily(): Promise<boolean> {
