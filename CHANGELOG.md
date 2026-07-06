@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.1
+
+### Fixes
+- pending-session detection is an explicit marker, not turns==0 (#6)
+
+### Other
+- Plan: Stage 3 bug spec — explicit pending-session marker
+
 ## 0.1.0
 
 ### Other
