@@ -35,7 +35,7 @@ describe('migration ladder', () => {
     const version = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as {
       v: number;
     };
-    expect(version.v).toBe(3); // 0001 init + 0002 sessions.turns + 0003 sessions.pending
+    expect(version.v).toBe(4); // 0001 init + 0002 turns + 0003 pending + 0004 jobs.retry_of
 
     const tables = db
       .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name`)
@@ -47,7 +47,7 @@ describe('migration ladder', () => {
 
     // Each migration applied exactly once: one version row per rung.
     const rows = db.prepare('SELECT COUNT(*) AS n FROM schema_version').get() as { n: number };
-    expect(rows.n).toBe(3);
+    expect(rows.n).toBe(4);
 
     // 0002/0003 are additive: existing rows backfill turns = 0, pending = 0.
     db.prepare(`INSERT INTO sessions (session_id, started_at) VALUES ('s1', '2026-07-06')`).run();
@@ -75,9 +75,16 @@ describe('migration ladder', () => {
     const version = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as {
       v: number;
     };
-    expect(version.v).toBe(3);
+    expect(version.v).toBe(4);
     const rows = db.prepare('SELECT COUNT(*) AS n FROM schema_version').get() as { n: number };
-    expect(rows.n).toBe(3);
+    expect(rows.n).toBe(4);
+
+    // 0004 is additive: pre-existing jobs rows backfill retry_of = NULL.
+    insertJob(db, 'job-pre-0004', 'queued');
+    const job = db.prepare(`SELECT retry_of FROM jobs WHERE id = 'job-pre-0004'`).get() as {
+      retry_of: string | null;
+    };
+    expect(job.retry_of).toBeNull();
 
     // The pre-existing live session is NOT pending (turns lies at 0 — fine).
     const session = db

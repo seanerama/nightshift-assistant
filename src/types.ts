@@ -54,6 +54,20 @@ export interface RotationRecord {
 /** contracts/job-lifecycle.md — the guarded state machine's states. */
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'killed';
 
+/** contracts/job-lifecycle.md — submit() input shape (schema 1). */
+export interface JobSubmit {
+  schema: 1;
+  /** 'app-build' | 'story' | 'study' | 'brief' | 'research' | ... (open set). */
+  type: string;
+  title: string;
+  /** The worker session's task. */
+  instruction: string;
+  /** Project directory the worker runs in. */
+  workdir: string;
+  /** Workers ALWAYS get the default-deny allow-list env (FIX-H3); no override. */
+  env: 'minimal';
+}
+
 /** contracts/job-lifecycle.md — persisted JobRecord (the only representation of a worker). */
 export interface JobRecord {
   schema: 1;
@@ -74,4 +88,19 @@ export interface JobRecord {
   endedAt: string | null;
   /** Where the completion sentinel must appear. */
   sentinelPath: string;
+  /**
+   * Additive (v1-compatible): id of the failed row this row retries, or null.
+   * Below-cap failures re-queue as a fresh linked row (no running → queued edge).
+   */
+  retryOf: string | null;
+}
+
+/** contracts/job-lifecycle.md — the completion sentinel a worker writes at sentinelPath. */
+export interface JobSentinel {
+  schema: 1;
+  status: 'success' | 'failure';
+  summary: string;
+  outputs?: string[];
+  url?: string;
+  port?: number;
 }

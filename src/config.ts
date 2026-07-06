@@ -32,6 +32,17 @@ export interface Config {
   sizeCapTurns: number;
   /** Max bytes of seed context handed to a brand-new session (newest wins). */
   seedMaxBytes: number;
+  /**
+   * Master switch for the job runner (Stage 4). Default OFF — with it unset,
+   * submit() rejects and no reconciler/poller runs.
+   */
+  jobsEnabled: boolean;
+  /** Max concurrently LIVE worker processes (reconciler-counted, not row counts). */
+  maxJobs: number;
+  /** Attempts bound: a job failing this many times lands terminal `failed`. */
+  jobRetryCap: number;
+  /** Seconds between kill()'s SIGTERM and the SIGKILL follow-up. */
+  jobKillGraceSec: number;
 }
 
 export class ConfigError extends Error {}
@@ -108,6 +119,35 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     );
   }
 
+  // Job-runner kill-switch: same discipline as rotation — only exactly "true"
+  // enables; "false"/unset stay dark; anything else fails fast.
+  const jobsRaw = env.NIGHTSHIFT_JOBS_ENABLED;
+  if (jobsRaw !== undefined && jobsRaw !== '' && jobsRaw !== 'true' && jobsRaw !== 'false') {
+    throw new ConfigError(`NIGHTSHIFT_JOBS_ENABLED must be "true" or "false" (got: ${jobsRaw})`);
+  }
+  const jobsEnabled = jobsRaw === 'true';
+
+  const maxJobs = Number.parseInt(env.NIGHTSHIFT_MAX_JOBS ?? '2', 10);
+  if (!Number.isInteger(maxJobs) || maxJobs < 1) {
+    throw new ConfigError(
+      `NIGHTSHIFT_MAX_JOBS is not a valid positive integer: ${env.NIGHTSHIFT_MAX_JOBS}`,
+    );
+  }
+
+  const jobRetryCap = Number.parseInt(env.NIGHTSHIFT_JOB_RETRY_CAP ?? '2', 10);
+  if (!Number.isInteger(jobRetryCap) || jobRetryCap < 1) {
+    throw new ConfigError(
+      `NIGHTSHIFT_JOB_RETRY_CAP is not a valid positive integer: ${env.NIGHTSHIFT_JOB_RETRY_CAP}`,
+    );
+  }
+
+  const jobKillGraceSec = Number.parseInt(env.NIGHTSHIFT_JOB_KILL_GRACE_SEC ?? '10', 10);
+  if (!Number.isInteger(jobKillGraceSec) || jobKillGraceSec < 1) {
+    throw new ConfigError(
+      `NIGHTSHIFT_JOB_KILL_GRACE_SEC is not a valid positive integer: ${env.NIGHTSHIFT_JOB_KILL_GRACE_SEC}`,
+    );
+  }
+
   return {
     webexBotToken,
     webexWebhookSecret,
@@ -121,5 +161,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     rotateHour,
     sizeCapTurns,
     seedMaxBytes,
+    jobsEnabled,
+    maxJobs,
+    jobRetryCap,
+    jobKillGraceSec,
   };
 }
