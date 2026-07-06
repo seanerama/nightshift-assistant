@@ -4,6 +4,8 @@
  * final. Migration ladder applies clean on a scratch DB twice (idempotent head).
  */
 
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { migrate, openDatabase } from '../src/db/migrate.js';
@@ -33,7 +35,7 @@ describe('migration ladder', () => {
     const version = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as {
       v: number;
     };
-    expect(version.v).toBe(2); // 0001 init + 0002 sessions.turns
+    expect(version.v).toBe(3); // 0001 init + 0002 sessions.turns + 0003 sessions.pending
 
     const tables = db
       .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name`)
@@ -45,14 +47,44 @@ describe('migration ladder', () => {
 
     // Each migration applied exactly once: one version row per rung.
     const rows = db.prepare('SELECT COUNT(*) AS n FROM schema_version').get() as { n: number };
-    expect(rows.n).toBe(2);
+    expect(rows.n).toBe(3);
 
-    // 0002 is additive: existing rows backfill turns = 0.
+    // 0002/0003 are additive: existing rows backfill turns = 0, pending = 0.
     db.prepare(`INSERT INTO sessions (session_id, started_at) VALUES ('s1', '2026-07-06')`).run();
-    const session = db.prepare('SELECT turns FROM sessions WHERE session_id = ?').get('s1') as {
-      turns: number;
-    };
+    const session = db
+      .prepare('SELECT turns, pending FROM sessions WHERE session_id = ?')
+      .get('s1') as { turns: number; pending: number };
     expect(session.turns).toBe(0);
+    expect(session.pending).toBe(0);
+    db.close();
+  });
+
+  it('upgrades a v2-head DB (the live pre-incident shape): 0003 backfills pending = 0, idempotently', () => {
+    // Build a DB at ladder head 2 with a live materialized session — exactly
+    // the state the 2026-07-06 incident daemon woke up to.
+    const db = openDatabase(':memory:');
+    db.exec(readFileSync(join(MIGRATIONS_DIR, '0001_init.sql'), 'utf8'));
+    db.exec(readFileSync(join(MIGRATIONS_DIR, '0002_sessions_turns.sql'), 'utf8'));
+    db.prepare(
+      `INSERT INTO sessions (session_id, started_at, is_current) VALUES ('sess-live', '2026-07-05T22:00:00Z', 1)`,
+    ).run();
+
+    migrate(db, MIGRATIONS_DIR);
+    migrate(db, MIGRATIONS_DIR); // second apply must be a no-op, not a crash
+
+    const version = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as {
+      v: number;
+    };
+    expect(version.v).toBe(3);
+    const rows = db.prepare('SELECT COUNT(*) AS n FROM schema_version').get() as { n: number };
+    expect(rows.n).toBe(3);
+
+    // The pre-existing live session is NOT pending (turns lies at 0 — fine).
+    const session = db
+      .prepare(`SELECT turns, pending FROM sessions WHERE session_id = 'sess-live'`)
+      .get() as { turns: number; pending: number };
+    expect(session.turns).toBe(0);
+    expect(session.pending).toBe(0);
     db.close();
   });
 });

@@ -12,7 +12,7 @@
  *   3. durable facts promoted into memory/ (MEMORY.md index + dated append);
  *   4. transcript location resolved (claude CLI convention) and recorded;
  *   5. sessions row flipped (is_current=0, rotated_at, rotation_reason) and a
- *      fresh PENDING row (pre-assigned session id, turns=0) becomes current —
+ *      fresh PENDING row (pre-assigned session id, pending=1) becomes current —
  *      the next relay() starts it with --session-id plus a seed built from
  *      memory/ + the latest daily summary, delivered via --append-system-prompt
  *      so it never appears in the user-visible reply.
@@ -73,6 +73,8 @@ interface SessionRow {
   session_id: string;
   started_at: string;
   turns: number;
+  /** 1 = rotation-created row whose claude session has not materialized yet. */
+  pending: number;
 }
 
 export interface SessionManagerHooks {
@@ -119,15 +121,17 @@ export function createSessionManager(
   const getCurrentRow = (): SessionRow | null => {
     const row = db
       .prepare(
-        'SELECT id, session_id, started_at, turns FROM sessions WHERE is_current = 1 ORDER BY id DESC LIMIT 1',
+        'SELECT id, session_id, started_at, turns, pending FROM sessions WHERE is_current = 1 ORDER BY id DESC LIMIT 1',
       )
       .get() as SessionRow | undefined;
     return row ?? null;
   };
 
   const persistSessionId = (sessionId: string): void => {
+    // A successful turn materializes the session: clear the pending marker
+    // alongside the id — from here on relay() resumes, never starts.
     const updated = db
-      .prepare('UPDATE sessions SET session_id = ? WHERE is_current = 1')
+      .prepare('UPDATE sessions SET session_id = ?, pending = 0 WHERE is_current = 1')
       .run(sessionId);
     if (updated.changes === 0) {
       db.prepare('INSERT INTO sessions (session_id, started_at, is_current) VALUES (?, ?, 1)').run(
@@ -284,15 +288,15 @@ export function createSessionManager(
     }
     recordTranscriptLocation(appDir, rotatedAt, current.session_id, transcriptPath);
 
-    // 5. Flip the outgoing row; a fresh pending row (pre-assigned id, turns=0)
-    //    becomes current — the next relay() starts it seeded.
+    // 5. Flip the outgoing row; a fresh EXPLICITLY-pending row (pre-assigned
+    //    id, pending=1) becomes current — the next relay() starts it seeded.
     const newSessionId = randomUUID();
     db.transaction(() => {
       db.prepare(
         'UPDATE sessions SET is_current = 0, rotated_at = ?, rotation_reason = ? WHERE id = ?',
       ).run(rotatedAt, reason, current.id);
       db.prepare(
-        'INSERT INTO sessions (session_id, started_at, is_current, turns) VALUES (?, ?, 1, 0)',
+        'INSERT INTO sessions (session_id, started_at, is_current, turns, pending) VALUES (?, ?, 1, 0, 1)',
       ).run(newSessionId, rotatedAt);
     })();
 
@@ -324,11 +328,15 @@ export function createSessionManager(
   const runTurn = async (msg: InboundMessage): Promise<AssistantReply> => {
     const current = getCurrentRow();
 
-    // A row with turns=0 is a rotation-created PENDING session: start it under
-    // its pre-assigned id, seeded. No row at all is a brand-new session (also
-    // seeded when rotation is enabled). Otherwise resume — Stage 1 behavior.
+    // A row EXPLICITLY marked pending is a rotation-created session: start it
+    // under its pre-assigned id, seeded. No row at all is a brand-new session
+    // (also seeded when rotation is enabled). Any other row — whatever its
+    // turn count says — is a materialized session: resume, Stage 1 behavior.
+    // (turns==0 is NOT pending-ness: migration backfill leaves real sessions
+    // at 0, and starting one burns the turn — the 2026-07-06 incident.)
+    const pending = current !== null && current.pending === 1;
     const opts: AgentTurnOptions = {};
-    if (current === null || (config.rotationEnabled && current.turns === 0)) {
+    if (current === null || pending) {
       if (current !== null) opts.sessionId = current.session_id;
       if (config.rotationEnabled) {
         const seed = buildSeed(appDir, config.seedMaxBytes);
@@ -342,8 +350,10 @@ export function createSessionManager(
 
     if (!result.ok) {
       // Session died (or never started) mid-turn: error reply, never silence.
-      // Clear the persisted session so the next message starts cleanly.
-      clearCurrentSession();
+      // A pending row never materialized — keep it (still pending) so the
+      // retry STARTS it again under the same pre-assigned id; otherwise clear
+      // the persisted session so the next message starts cleanly.
+      if (!pending) clearCurrentSession();
       return {
         schema: 1,
         text: `The assistant session hit an error on this turn (${result.text}). The next message will start a fresh session.`,
@@ -396,9 +406,11 @@ export function createSessionManager(
       // rotation) finishes first and the conditions are re-read after it.
       return enqueue(async () => {
         const current = getCurrentRow();
-        // Nothing to rotate, or an unused pending session (rotating an empty
-        // session would just churn summaries).
-        if (current === null || current.turns === 0) return false;
+        // Nothing to rotate, or an unused rotation-created pending session
+        // (rotating an unmaterialized session would just churn summaries).
+        // Explicit pending — NOT turns==0 — so a backfilled-but-real session
+        // (turns lies at 0) still rotates once past the boundary.
+        if (current === null || current.pending === 1) return false;
         if (!isPastDailyBoundary(now(), config.rotateHour, new Date(current.started_at))) {
           return false;
         }
