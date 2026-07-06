@@ -1,0 +1,16 @@
+{
+  "version": "0.0.1",
+  "deployed_at": null,
+  "rollback_from": "none (first release; rollback = git checkout previous tag + restart)",
+  "environments": {
+    "prod": {
+      "tag": "v0.0.1",
+      "host": "dev server (nsaf-dev-server, user systemd)",
+      "webhook_url": "https://3090-tuf.taile0ffc4.ts.net/webhook"
+    }
+  },
+  "secret_locations": [
+    "WEBEX_BOT_TOKEN, WEBEX_WEBHOOK_SECRET, WEBEX_OWNER_PERSON_ID, NIGHTSHIFT_AGENT_BIN @ ~/apps/nightshift-assistant/.env on the dev server (mode 0600)"
+  ],
+  "notes": []
+}

@@ -1,27 +1,17 @@
-# Nightshift Assistant — Status & Handoff
+# Status & Handoff
 
-> Runtime/ops truth (framework-spec §4.6). Owned by the **Release/Deploy Operator**,
-> updated on every deploy. Records secret **locations** only — never values.
+> Runtime/ops truth (framework-spec §4.6). Generated from `.verity/runtime.json`
+> by the Release/Deploy Operator. Secret LOCATIONS only — never values.
 
-**As of:** not yet deployed
+**Live version:** 0.0.1
+**Deployed at:** (not deployed)
+**Rollback from:** none (first release; rollback = git checkout previous tag + restart)
 
-## TL;DR
+## Environments
+- **prod:** {"tag":"v0.0.1","host":"dev server (nsaf-dev-server, user systemd)","webhook_url":"https://3090-tuf.taile0ffc4.ts.net/webhook"}
 
-Scaffolded by Verity. Nothing deployed yet.
-
-## Live deployment
-
-- (none)
-
-## Images
-
-- prefix: `ghcr.io/seanerama/nightshift-assistant`
-- (no releases yet)
-
-## Secrets
-
-- (none configured) — when set, list NAMES + on-disk LOCATIONS only, never values.
+## Secret locations (names + on-disk locations only, never values)
+- WEBEX_BOT_TOKEN, WEBEX_WEBHOOK_SECRET, WEBEX_OWNER_PERSON_ID, NIGHTSHIFT_AGENT_BIN @ ~/apps/nightshift-assistant/.env on the dev server (mode 0600)
 
 ## Coordination notes
-
 - (none)
