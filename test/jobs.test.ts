@@ -498,9 +498,15 @@ describe('job runner', () => {
       expect(args[0]).toBe('-p');
       expect(args[1]).toContain('/story:start MODE=dump-args turtles');
       expect(args[2]).toBe('--session-id');
+      // …then the Stage 12 per-type model (single-value flag, BEFORE the
+      // variadic --allowedTools so nothing can swallow its value)…
+      const modelIdx = args.indexOf('--model');
+      expect(modelIdx).toBeGreaterThan(args.indexOf('--session-id'));
+      expect(args[modelIdx + 1]).toBe('claude-opus-4-8'); // story runs Opus
       // …then the registry permission args (NEVER before -p: --allowedTools is
       // variadic and would swallow a following prompt — CLI v2.1.201 verified).
-      expect(args.indexOf('--permission-mode')).toBeGreaterThan(args.indexOf('--session-id'));
+      expect(args.indexOf('--permission-mode')).toBeGreaterThan(modelIdx);
+      expect(args.indexOf('--allowedTools')).toBeGreaterThan(modelIdx);
       expect(args[args.indexOf('--permission-mode') + 1]).toBe('acceptEdits');
       const allowed = args[args.indexOf('--allowedTools') + 1] ?? '';
       expect(allowed).toContain('Bash(node *)');
@@ -518,6 +524,7 @@ describe('job runner', () => {
       ) as string[];
       expect(args).toContain('--permission-mode');
       expect(args[args.indexOf('--permission-mode') + 1]).toBe('bypassPermissions');
+      expect(args[args.indexOf('--model') + 1]).toBe('claude-opus-4-8'); // Stage 12
     });
 
     it('a story worker env = allow-list + the story extras and NOTHING else', () =>
@@ -571,19 +578,25 @@ describe('job runner', () => {
         }
       }));
 
-    it('a RAW submit stays byte-identical to Stage 5 even with the registry ENABLED', () =>
+    it('a RAW submit keeps the Stage 5 shape + the generic model even with the registry ENABLED', () =>
       withEnv({ ELEVENLABS_API_KEY: 'tts-key', PERPLEXITY_API_KEY: 'pplx-key' }, async () => {
         const runner = makeRunner({ typesEnabled: true });
         const record = submit(runner, 'MODE=dump-args plain worker');
         await waitFor(() => runner.get(record.id)?.status === 'succeeded');
 
-        // Exactly the Stage 5 argv: -p <prompt> --session-id <uuid> — nothing more.
+        // Stage 12 DELIBERATE RE-PIN: the Stage 5 argv (-p <prompt>
+        // --session-id <uuid>) grew EXACTLY one flag — the explicit generic
+        // worker model. Model selection is runtime config, not a registry
+        // feature, so it rides every worker spawn; everything else stays
+        // pinned (no permission args, no extra env).
         const args = JSON.parse(
           readFileSync(join(workdir, 'worker-args.json'), 'utf8'),
         ) as string[];
-        expect(args).toHaveLength(4);
+        expect(args).toHaveLength(6);
         expect(args[0]).toBe('-p');
         expect(args[2]).toBe('--session-id');
+        expect(args[4]).toBe('--model');
+        expect(args[5]).toBe('claude-sonnet-5');
 
         const envRecord = submit(runner, 'MODE=dump-env plain worker');
         await waitFor(() => runner.get(envRecord.id)?.status === 'succeeded');
@@ -600,8 +613,12 @@ describe('job runner', () => {
       );
       expect(runner.list()).toHaveLength(0);
 
-      const generic = runner.submitType('generic', { instruction: 'MODE=success', workdir });
+      const generic = runner.submitType('generic', { instruction: 'MODE=dump-args', workdir });
       await waitFor(() => runner.get(generic.id)?.status === 'succeeded');
+      // Stage 12: the model flag applies even with the registry OFF — a
+      // generic spawn carries the generic model (never host-inherited).
+      const args = JSON.parse(readFileSync(join(workdir, 'worker-args.json'), 'utf8')) as string[];
+      expect(args[args.indexOf('--model') + 1]).toBe('claude-sonnet-5');
       const raw = submit(runner, 'MODE=success');
       await waitFor(() => runner.get(raw.id)?.status === 'succeeded');
     });

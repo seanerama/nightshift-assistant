@@ -49,6 +49,7 @@ import {
   JobTypeError,
   knownJobTypes,
   renderJobType,
+  WORKER_MODEL_GENERIC,
 } from './types.js';
 
 /** Rejected submit/kill input (invalid shape, unknown id, or the kill-switch). */
@@ -417,12 +418,21 @@ export function createJobRunner(
       // Stage 6: a registry-typed row spawns with the type's permission args
       // ON TOP of the base argv and the type's extraEnv names ON TOP of
       // workerEnv() (still default-deny; never replaced). No marker (or the
-      // types kill-switch off) → the exact Stage 5 spawn (test-pinned).
+      // types kill-switch off) → the Stage 5 spawn plus the model flag
+      // (test-pinned).
+      // Stage 12: EVERY worker gets an explicit `--model` — the registry
+      // type's model for typed rows, the generic model otherwise (raw
+      // submits, generic typed submits, and typed rows while the types
+      // kill-switch is off). Runtime config, not a gated feature.
       // ORDER MATTERS: permission args go AFTER `-p <prompt> --session-id`
-      // because --allowedTools is variadic and would swallow a following
-      // prompt as a tool name (verified against claude CLI v2.1.201).
+      // because --allowedTools is VARIADIC and would swallow a following
+      // prompt as a tool name (verified against claude CLI v2.1.201). The
+      // single-value --model keeps the same discipline: it sits BEFORE the
+      // variadic permission args so nothing can swallow its value — never
+      // reorder.
       const entry = registryEntryFor(row.id);
-      const spawnArgs = ['-p', prompt, '--session-id', sessionId];
+      const model = entry?.model ?? WORKER_MODEL_GENERIC;
+      const spawnArgs = ['-p', prompt, '--session-id', sessionId, '--model', model];
       if (entry !== null) spawnArgs.push(...entry.permissionArgs);
       const spawnEnv = entry === null ? workerEnv() : workerEnvWith(entry.extraEnv);
 

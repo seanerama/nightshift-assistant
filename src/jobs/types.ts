@@ -34,6 +34,17 @@ import { join } from 'node:path';
 /** Rejected type/params input (unknown type, bad params). Mapped to 400 upstream. */
 export class JobTypeError extends Error {}
 
+/**
+ * Per-type worker models (Stage 12, issue #22): chosen deliberately instead of
+ * inherited from the host claude config (which silently served Opus 4.7 for
+ * everything). Passed as `--model` on the worker spawn (runner.ts) — a
+ * single-value flag, placed BEFORE the variadic permission args per the argv
+ * order warning above. Models are invisible to the operator surface: the
+ * registry preamble deliberately does not mention them.
+ */
+export const WORKER_MODEL_GENERIC = 'claude-sonnet-5';
+export const WORKER_MODEL_HEAVY = 'claude-opus-4-8';
+
 export type JobParams = Record<string, unknown>;
 
 export interface RenderedJob {
@@ -44,6 +55,8 @@ export interface RenderedJob {
   workdir: string;
   permissionArgs: readonly string[];
   extraEnv: readonly string[];
+  /** The worker's claude model (Stage 12) — spawned as `--model <id>`. */
+  model: string;
 }
 
 export interface JobTypeEntry {
@@ -61,6 +74,8 @@ export interface JobTypeEntry {
   permissionArgs: readonly string[];
   /** Env var NAMES copied from the daemon env if present — explicit, never wholesale. */
   extraEnv: readonly string[];
+  /** The worker's claude model (Stage 12) — spawned as `--model <id>`. */
+  model: string;
 }
 
 /** ~/projects/<slug>-style slug: lowercase, alnum runs joined by '-', bounded. */
@@ -158,6 +173,7 @@ const registry: readonly JobTypeEntry[] = [
       truncate(requireString('generic', params, 'instruction')),
     permissionArgs: [],
     extraEnv: [],
+    model: WORKER_MODEL_GENERIC,
   },
   {
     type: 'story',
@@ -197,6 +213,7 @@ const registry: readonly JobTypeEntry[] = [
       'GOOGLE_API_KEY',
       'NANOBANANA_API_KEY',
     ],
+    model: WORKER_MODEL_HEAVY,
   },
   {
     type: 'study',
@@ -219,6 +236,7 @@ const registry: readonly JobTypeEntry[] = [
     permissionArgs: PIPELINE_PERMISSION_ARGS,
     // sws:research fans out through Perplexity.
     extraEnv: ['PERPLEXITY_API_KEY'],
+    model: WORKER_MODEL_HEAVY,
   },
   {
     type: 'brief',
@@ -236,6 +254,7 @@ const registry: readonly JobTypeEntry[] = [
     titleTemplate: (params) => `Brief: ${truncate(requireString('brief', params, 'profile'))}`,
     permissionArgs: PIPELINE_PERMISSION_ARGS,
     extraEnv: ['PERPLEXITY_API_KEY'],
+    model: WORKER_MODEL_HEAVY,
   },
   {
     // EXPERIMENTAL — the old NSAF posture: an unattended SDD build with the
@@ -269,6 +288,7 @@ const registry: readonly JobTypeEntry[] = [
       `App build: ${optionalString('app-build', params, 'name') ?? truncate(requireString('app-build', params, 'idea'))}`,
     permissionArgs: APP_BUILD_PERMISSION_ARGS,
     extraEnv: [],
+    model: WORKER_MODEL_HEAVY,
   },
 ];
 
@@ -303,6 +323,7 @@ export function renderJobType(type: string, params: unknown, home: string): Rend
     workdir: entry.workdirStrategy(p, home),
     permissionArgs: entry.permissionArgs,
     extraEnv: entry.extraEnv,
+    model: entry.model,
   };
 }
 
