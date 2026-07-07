@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.0
+
+### Other
+- [stage 12] Explicit models, CLI-spelling allowances, dispatch honesty (#24)
+- Plan: Stage 12 spec — explicit models, CLI spellings, dispatch honesty
+- [stage 11] Content promotion: study/story to *.seanmahoney.ai via GitHub + Coolify + Cloudflare (#23)
+- Plan: ADR 0008, promotion contract v1, Stage 11 spec (content promotion)
+- Ship v0.5.0: STATUS — delivery polish live
+
 ## 0.5.0
 
 ### Other
