@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.0
+
+### Other
+- [stage 8] Ack-first: immediate receipt signal for slow turns (#16)
+- Plan: Stage 8 spec — ack-first receipt for slow turns
+
 ## 0.3.1
 
 ### Fixes

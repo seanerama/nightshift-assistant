@@ -15,6 +15,12 @@ EnvironmentFile=/etc/nightshift/nightshift.env
 ExecStart=/usr/bin/env node dist/index.js
 Restart=on-failure
 RestartSec=5
+# Workers are detached child sessions that must SURVIVE daemon restarts (the
+# startup reconciler re-adopts them by persisted pid — job-lifecycle contract).
+# systemd's default KillMode=control-group kills the whole cgroup on restart,
+# which killed a live study worker at the 2026-07-07 v0.4.0 deploy (stage 9).
+# Signal only the daemon process.
+KillMode=process
 # Structured JSON logs go to stdout; journald picks them up.
 StandardOutput=journal
 StandardError=journal
