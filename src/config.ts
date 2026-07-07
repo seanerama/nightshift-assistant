@@ -22,6 +22,11 @@ export interface Config {
   /** Seconds before an in-flight agent turn is killed and reported as an error. */
   turnTimeoutSec: number;
   /**
+   * Seconds of silence before a one-time "working on it" receipt is sent for a
+   * slow turn (Stage 8). 0 disables the ack entirely; default 5.
+   */
+  ackAfterSec: number;
+  /**
    * Master switch for the rotation triggers + session seeding (Stage 2).
    * Default OFF — with it unset, relay behavior is identical to Stage 1.
    */
@@ -100,6 +105,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   if (!Number.isInteger(turnTimeoutSec) || turnTimeoutSec < 1) {
     throw new ConfigError(
       `NIGHTSHIFT_TURN_TIMEOUT_SEC is not a valid positive integer: ${env.NIGHTSHIFT_TURN_TIMEOUT_SEC}`,
+    );
+  }
+
+  // Ack threshold: 0 disables the receipt signal entirely (the only knob).
+  const ackAfterSec = Number.parseInt(env.NIGHTSHIFT_ACK_AFTER_SEC ?? '5', 10);
+  if (!Number.isInteger(ackAfterSec) || ackAfterSec < 0) {
+    throw new ConfigError(
+      `NIGHTSHIFT_ACK_AFTER_SEC is not a valid non-negative integer: ${env.NIGHTSHIFT_ACK_AFTER_SEC}`,
     );
   }
 
@@ -207,6 +220,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     dbPath: env.NIGHTSHIFT_DB_PATH ?? 'data/nightshift.db',
     port,
     turnTimeoutSec,
+    ackAfterSec,
     rotationEnabled,
     rotateHour,
     sizeCapTurns,

@@ -16,6 +16,9 @@ import type { WebexClient } from './webex.js';
 
 const MAX_BODY_BYTES = 1024 * 1024;
 
+/** One-time receipt sent when a turn outlives NIGHTSHIFT_ACK_AFTER_SEC (Stage 8). */
+export const ACK_TEXT = '🌙 On it — working on your request…';
+
 export interface TransportDeps {
   config: Config;
   log: Logger;
@@ -109,8 +112,33 @@ export function createTransportServer(deps: TransportDeps): Server {
 
     log.info('relaying inbound message', { messageId });
     const dest = { roomId: message.roomId };
+
+    // Deferred human ack (Stage 8): when relay() outlives the threshold, send
+    // ONE short receipt so a slow turn is distinguishable from a dead bot.
+    // setTimeout fires at most once → never more than one ack per inbound
+    // message; 0 disables entirely. Ack failures are logged, never fatal, and
+    // never suppress or delay the real reply.
+    let ackTimer: NodeJS.Timeout | undefined;
+    if (config.ackAfterSec > 0) {
+      ackTimer = setTimeout(() => {
+        log.info('slow turn: sending receipt ack', { messageId });
+        sender.send(dest, ACK_TEXT).catch((err: unknown) => {
+          log.error('ack send failed (real reply unaffected)', {
+            messageId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
+      }, config.ackAfterSec * 1000);
+    }
+
     try {
-      const reply = await relay(inbound);
+      let reply: { text: string };
+      try {
+        reply = await relay(inbound);
+      } finally {
+        // The reply beat the timer (or relay failed) — no ack from here on.
+        if (ackTimer !== undefined) clearTimeout(ackTimer);
+      }
       await sender.send(dest, reply.text);
       log.info('reply delivered', { messageId });
     } catch (err) {

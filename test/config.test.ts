@@ -38,6 +38,7 @@ describe('loadConfig', () => {
     expect(config.dbPath).toBe('data/nightshift.db');
     expect(config.port).toBe(3777);
     expect(config.turnTimeoutSec).toBe(300);
+    expect(config.ackAfterSec).toBe(5); // slow-turn receipt on by default
     expect(config.rotationEnabled).toBe(false); // rotation ships dark
     expect(config.rotateHour).toBe(4);
     expect(config.sizeCapTurns).toBe(200);
@@ -48,6 +49,15 @@ describe('loadConfig', () => {
     expect(config.jobKillGraceSec).toBe(10);
     expect(config.controlEnabled).toBe(false); // control surface ships dark
     expect(config.apiToken).toBe('');
+  });
+
+  it('validates NIGHTSHIFT_ACK_AFTER_SEC (non-negative integer; 0 disables)', () => {
+    expect(loadConfig({ ...FULL_ENV, NIGHTSHIFT_ACK_AFTER_SEC: '10' }).ackAfterSec).toBe(10);
+    expect(loadConfig({ ...FULL_ENV, NIGHTSHIFT_ACK_AFTER_SEC: '0' }).ackAfterSec).toBe(0);
+    expect(() => loadConfig({ ...FULL_ENV, NIGHTSHIFT_ACK_AFTER_SEC: '-1' })).toThrow(ConfigError);
+    expect(() => loadConfig({ ...FULL_ENV, NIGHTSHIFT_ACK_AFTER_SEC: 'soon' })).toThrow(
+      ConfigError,
+    );
   });
 
   it('enables rotation only on exactly "true" and fails fast on garbage', () => {
