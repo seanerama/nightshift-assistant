@@ -120,9 +120,13 @@ export interface PromoteRequest {
 /** contracts/promotion.md — PromotionRecord.status. */
 export type PromotionStatus = 'planned' | 'running' | 'live' | 'failed' | 'removed';
 
-/** contracts/promotion.md — one recorded pipeline step. */
+/** contracts/promotion.md + contracts/site-promotion.md — one recorded pipeline step. */
 export interface PromotionStep {
-  /** validate | scan | repo | coolify | route | dns | health (fixed order). */
+  /**
+   * Subdomain pipeline: validate | scan | repo | coolify | route | dns |
+   * health; website pipeline (site-promotion.md): validate | scan | stage |
+   * build | push | health. Fixed order either way.
+   */
   name: string;
   ok: boolean;
   detail: string;
@@ -137,7 +141,10 @@ export interface PromotionRecord {
   sourcePath: string;
   status: PromotionStatus;
   repoUrl: string | null;
-  /** https://<slug>.<NSAF_DOMAIN> */
+  /**
+   * Subdomain pipeline: https://<slug>.<NSAF_DOMAIN>; website pipeline:
+   * https://www.<NSAF_DOMAIN>/study-guides/<slug>.
+   */
   url: string | null;
   steps: PromotionStep[];
   createdAt: string;
