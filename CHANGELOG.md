@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0
+
+### Other
+- [stage 6] Job-type registry: skill payloads with per-type permission profiles (#12)
+- [stage 5] Control API + nightshift CLI: assistant session gets job/rotation/status tools (#11)
+- Plan: control-api contract, ADR 0007, Stage 5+6 specs (capability wiring)
+- Ship v0.2.0: STATUS — job runner live, stage-4 smoke passed
+
 ## 0.2.0
 
 ### Other
