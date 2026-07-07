@@ -15,6 +15,7 @@ import { migrate, openDatabase } from './db/migrate.js';
 import { createJobRunner, type JobRunner } from './jobs/runner.js';
 import type { Logger } from './log.js';
 import { selectAutoAttach } from './notices.js';
+import { createPromoter, type PromoterHooks } from './promotion/pipeline.js';
 import {
   createSessionManager,
   type SessionManager,
@@ -53,6 +54,8 @@ export interface App {
 export type AppHooks = Omit<SessionManagerHooks, 'notify'> & {
   /** Root for typed jobs' ~/projects/<slug> workdirs (default: os.homedir()). */
   home?: string;
+  /** Stage 11 promotion seams (git/gh PATH shim env, retry bounds) — tests only. */
+  promote?: PromoterHooks;
 };
 
 export function createApp(
@@ -140,6 +143,26 @@ export function createApp(
     }
   });
 
+  // Promotion module (Stage 11, ADR 0008): daemon-resident deterministic
+  // pipeline; the 🚀 completion/failure notice reuses the same owner-room
+  // tracking as rotation and job finishes. Constructed unconditionally —
+  // the API endpoint owns the NIGHTSHIFT_PROMOTE_ENABLED kill-switch.
+  const promoter = createPromoter(
+    {
+      db,
+      log,
+      config,
+      notify: async (text: string): Promise<void> => {
+        if (lastOwnerRoomId === null) {
+          log.info('promotion notice skipped: no owner room seen yet');
+          return;
+        }
+        await sender.send({ roomId: lastOwnerRoomId }, text);
+      },
+    },
+    { home, ...(sessionHooks.promote ?? {}) },
+  );
+
   const server = createTransportServer({
     config,
     log,
@@ -163,6 +186,7 @@ export function createApp(
         ownerRoom: () => lastOwnerRoomId,
         log,
       }),
+      promote: promoter,
       version: appVersion(),
     }),
   });

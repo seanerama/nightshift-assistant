@@ -6,7 +6,15 @@
  */
 
 import { spawn } from 'node:child_process';
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -227,6 +235,17 @@ describe('nightshift CLI (child process)', () => {
     expect(res.stderr).toContain('NIGHTSHIFT_API_TOKEN is not set');
   });
 
+  it('promote refuses when NIGHTSHIFT_PROMOTE_ENABLED is off (exit 1, clear message)', async () => {
+    // The shared app has promote dark (makeConfig default) — the CLI relays
+    // the endpoint's refusal and exits 1.
+    const dir = join(tmpDir, 'projects', 'some-study');
+    mkdirSync(join(dir, 'guides'), { recursive: true });
+    writeFileSync(join(dir, 'guides', 'chapter-01.html'), '<p>hi</p>');
+    const res = await cli('promote', dir);
+    expect(res.code).toBe(1);
+    expect(res.stderr).toContain('NIGHTSHIFT_PROMOTE_ENABLED');
+  });
+
   it('falls back to the app dir .env (script realpath, symlinks resolved)', async () => {
     // Fake deploy layout: <appdir>/bin/nightshift + <appdir>/.env, plus a
     // ~/.local/bin-style symlink pointing into it from elsewhere.
@@ -250,5 +269,97 @@ describe('nightshift CLI (child process)', () => {
     const viaSymlink = await runCli(join(linkDir, 'nightshift'), ['status'], bare);
     expect(viaSymlink.code).toBe(0);
     expect(viaSymlink.stdout).toContain('version:');
+  });
+});
+
+describe('nightshift promote (CLI, promotion enabled)', () => {
+  let tmpDir: string;
+  let contentDir: string;
+  let app: App;
+  let cliEnv: Record<string, string>;
+
+  const cli = (...args: string[]): Promise<CliResult> => runCli(BIN, args, cliEnv);
+
+  beforeEach(async () => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'nightshift-cli-promote-'));
+    contentDir = join(tmpDir, 'projects', 'subnet-study');
+    mkdirSync(join(contentDir, 'guides'), { recursive: true });
+    writeFileSync(join(contentDir, 'guides', 'chapter-01.html'), '<p>one</p>');
+    // Dry runs never touch the infra, so the unreachable makeConfig promote
+    // defaults are exactly right — any accidental execution would fail loudly.
+    app = createApp(
+      makeConfig({
+        agentBin: WORKER_STUB,
+        controlEnabled: true,
+        apiToken: TOKEN,
+        promoteEnabled: true,
+      }),
+      makeTestLogger(),
+      { appDir: tmpDir, home: tmpDir },
+    );
+    const port = await app.listen();
+    cliEnv = {
+      PATH: process.env.PATH ?? '',
+      NIGHTSHIFT_API_TOKEN: TOKEN,
+      NIGHTSHIFT_PORT: String(port),
+    };
+  });
+
+  afterEach(async () => {
+    await app.close();
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('dry run is the DEFAULT: prints the plan, says nothing executed and how to execute', async () => {
+    const res = await cli('promote', contentDir);
+    expect(res.code).toBe(0);
+    expect(res.stdout).toContain('status:    planned');
+    expect(res.stdout).toContain('slug:      subnet-study');
+    expect(res.stdout).toContain('url:       https://subnet-study.example.test');
+    expect(res.stdout).toContain('repo:      https://github.com/seanerama/subnet-study');
+    expect(res.stdout).toContain('ok   validate');
+    expect(res.stdout).toContain('ok   health');
+    expect(res.stdout).toContain('NOTHING was executed');
+    expect(res.stdout).toContain('Re-run with --yes to execute');
+    // Proof nothing ran: the source dir gained no .git.
+    expect(existsSync(join(contentDir, '.git'))).toBe(false);
+  });
+
+  it('--dry-run behaves identically; --slug/--title pass through; --json is raw', async () => {
+    const res = await cli(
+      'promote',
+      contentDir,
+      '--dry-run',
+      '--slug',
+      'ipv4-subnetting',
+      '--title',
+      'IPv4 Subnetting',
+      '--json',
+    );
+    expect(res.code).toBe(0);
+    const json = JSON.parse(res.stdout) as {
+      ok: boolean;
+      promotion: { slug: string; title: string; status: string };
+    };
+    expect(json.ok).toBe(true);
+    expect(json.promotion.status).toBe('planned');
+    expect(json.promotion.slug).toBe('ipv4-subnetting');
+    expect(json.promotion.title).toBe('IPv4 Subnetting');
+  });
+
+  it('argument errors exit 1: missing path, --dry-run with --yes', async () => {
+    const noPath = await cli('promote');
+    expect(noPath.code).toBe(1);
+    expect(noPath.stderr).toContain('promote requires a path');
+
+    const conflict = await cli('promote', contentDir, '--dry-run', '--yes');
+    expect(conflict.code).toBe(1);
+    expect(conflict.stderr).toContain('mutually exclusive');
+  });
+
+  it('rejected input relays the API error and exits 1', async () => {
+    const res = await cli('promote', join(tmpDir, 'projects', 'does-not-exist'));
+    expect(res.code).toBe(1);
+    expect(res.stderr).toContain('not found');
   });
 });
