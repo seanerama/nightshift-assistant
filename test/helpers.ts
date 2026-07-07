@@ -46,6 +46,7 @@ export function makeConfig(overrides: Partial<Config> = {}): Config {
     dbPath: ':memory:',
     port: 0, // ephemeral
     turnTimeoutSec: 10,
+    ackAfterSec: 0, // off in the shared config; Stage 8 ack tests set a small threshold
     rotationEnabled: false, // Stage 2 ships dark; rotation tests flip it on
     rotateHour: 4,
     sizeCapTurns: 200,
@@ -78,6 +79,8 @@ export interface WebexStub {
   sends: Array<Record<string, unknown>>;
   /** Register a message GET /messages/:id will serve. */
   addMessage(msg: StubMessage): void;
+  /** Make the next n POST /messages fail with 500 (send-failure tests). */
+  failNext(n: number): void;
   close(): Promise<void>;
 }
 
@@ -85,6 +88,7 @@ export interface WebexStub {
 export async function startWebexStub(): Promise<WebexStub> {
   const messages = new Map<string, StubMessage>();
   const sends: Array<Record<string, unknown>> = [];
+  let failRemaining = 0;
 
   const server: Server = createServer((req, res) => {
     const url = req.url ?? '';
@@ -106,6 +110,12 @@ export async function startWebexStub(): Promise<WebexStub> {
         body += d.toString('utf8');
       });
       req.on('end', () => {
+        if (failRemaining > 0) {
+          failRemaining -= 1;
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ message: 'injected failure' }));
+          return;
+        }
         sends.push(JSON.parse(body) as Record<string, unknown>);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ id: `sent-${sends.length}` }));
@@ -128,6 +138,9 @@ export async function startWebexStub(): Promise<WebexStub> {
     sends,
     addMessage(msg: StubMessage): void {
       messages.set(msg.id, msg);
+    },
+    failNext(n: number): void {
+      failRemaining = n;
     },
     close(): Promise<void> {
       return new Promise((resolve, reject) => {
