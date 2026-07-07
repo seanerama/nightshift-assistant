@@ -29,6 +29,10 @@ Usage:
   nightshift jobs [--status <s>]   List jobs (status: queued|running|succeeded|failed|killed)
   nightshift job <id>              Show one job
   nightshift kill <id>             Kill a job (SIGTERM, then SIGKILL)
+  nightshift deliver <path> [--note <text>]
+                                   Send a file to the owner's Webex room as an
+                                   attachment (allowed roots: ~/projects and the
+                                   app's jobs/ + logs/ dirs)
   nightshift rotate                Rotate the conversational session (manual)
   nightshift status                Daemon status (version, uptime, session, job counts)
 
@@ -170,6 +174,7 @@ function parseArgs(argv) {
     '--workdir',
     '--status',
     '--params',
+    '--note',
   ]);
   const options = {};
   const positionals = [];
@@ -255,6 +260,20 @@ async function runCommand(conn, parsed) {
       if (id === undefined) fail(`kill requires an id\n\n${USAGE}`);
       const result = await callApi(conn, 'POST', `/api/v1/jobs/${encodeURIComponent(id)}/kill`);
       return { result, render: (r) => `Job killed.\n${formatJob(r.job)}` };
+    }
+    case 'deliver': {
+      const target = positionals[0];
+      if (target === undefined) fail(`deliver requires a file path\n\n${USAGE}`);
+      // Resolve relative paths against OUR cwd — the daemon only ever sees
+      // (and confines) an absolute path.
+      const path = await import('node:path');
+      const body = { path: path.resolve(target) };
+      if (options.note !== undefined) body.note = options.note;
+      const result = await callApi(conn, 'POST', '/api/v1/deliver', body);
+      return {
+        result,
+        render: (r) => `Delivered ${r.delivered.path} to room ${r.delivered.roomId}`,
+      };
     }
     case 'rotate': {
       const result = await callApi(conn, 'POST', '/api/v1/session/rotate', { reason: 'manual' });

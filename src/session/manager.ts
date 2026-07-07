@@ -31,6 +31,7 @@ import type Database from 'better-sqlite3';
 import type { Config } from '../config.js';
 import { jobTypesPreamble } from '../jobs/types.js';
 import type { Logger } from '../log.js';
+import { rotationNotice } from '../notices.js';
 import type { AssistantReply, InboundMessage, RotationReason, RotationRecord } from '../types.js';
 import { isPastDailyBoundary } from './boundary.js';
 import {
@@ -70,6 +71,7 @@ export const CONTROL_PREAMBLE = [
   '- `nightshift submit --type <type> --title <title> --instruction <text> --workdir <dir>` — dispatch long-running work (builds, pipelines, research) as a background job. NEVER run long work inline in this conversation; always submit a job and reply immediately.',
   '- `nightshift jobs [--status <status>]` / `nightshift job <id>` — list jobs or inspect one.',
   '- `nightshift kill <id>` — stop a job.',
+  '- `nightshift deliver <path> [--note "..."]` — send a file to the owner in Webex as an attachment (allowed roots: ~/projects and the app\'s jobs/ + logs/ dirs). Use it whenever the owner asks for a produced artifact.',
   '- `nightshift rotate` — rotate this conversational session (manual).',
   '- `nightshift status` — daemon status (version, uptime, session, job counts).',
   'Invoke it as bare `nightshift …`, never with a path prefix (no `./bin/nightshift`, no absolute path) — path-prefixed invocations are denied by the permission rule.',
@@ -370,11 +372,9 @@ export function createSessionManager(
     };
     log.info('session rotated', { ...record, memoryPromoted: promotedPath !== null });
 
-    // Rotation notice — best-effort, never blocks the ritual.
+    // Rotation notice (builder-formatted) — best-effort, never blocks the ritual.
     try {
-      await notify(
-        `Rotated the conversational session (${reason}); summary at ${relative(appDir, summaryPath)}`,
-      );
+      await notify(rotationNotice(reason, relative(appDir, summaryPath)));
     } catch (err) {
       log.error('rotation notice delivery failed', {
         error: err instanceof Error ? err.message : String(err),

@@ -11,6 +11,9 @@
  *   MODE=exit-nonzero      exit 3, no sentinel
  *   MODE=failure-sentinel  write a status:'failure' sentinel, exit 0
  *   MODE=malformed-sentinel  write invalid JSON at the sentinel path, exit 0
+ *   MODE=outputs           create files per OUTPUTS=name:bytes,name:bytes in
+ *                          cwd, list them in a success sentinel (Stage 10
+ *                          auto-attach tests); summary has three sentences
  *   MODE=dump-env          write process.env to worker-env.json in cwd, succeed
  *   MODE=dump-args         write our argv to worker-args.json in cwd, succeed
  *   MODE=flaky             fail (no sentinel) on the first run in this workdir,
@@ -83,6 +86,26 @@ function workerRun() {
       });
       process.exit(0);
       break;
+    case 'outputs': {
+      // OUTPUTS=a.txt:10,b.bin:2000000 — create each file (in cwd, the job's
+      // workdir) with the given byte count and list it in the sentinel.
+      const spec = (prompt.match(/OUTPUTS=(\S+)/) ?? [])[1] ?? '';
+      const outputs = [];
+      for (const item of spec.split(',').filter(Boolean)) {
+        const [name, bytes] = item.split(':');
+        fs.writeFileSync(name, Buffer.alloc(Number.parseInt(bytes ?? '1', 10), 0x61));
+        outputs.push(name);
+      }
+      writeSentinel({
+        schema: 1,
+        status: 'success',
+        summary:
+          'Produced the requested outputs. Everything validated cleanly. This third sentence must be truncated away.',
+        outputs,
+      });
+      process.exit(0);
+      break;
+    }
     case 'no-sentinel':
       process.exit(0);
       break;

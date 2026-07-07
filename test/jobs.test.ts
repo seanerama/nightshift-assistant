@@ -160,7 +160,7 @@ describe('job runner', () => {
       await new Promise((r) => setTimeout(r, 150));
       expect(notices).toHaveLength(1);
       expect(notices[0]?.job.status).toBe('succeeded');
-      expect(notices[0]?.notice).toContain('Job succeeded');
+      expect(notices[0]?.notice).toContain('✅ **test job** — test finished');
       expect(notices[0]?.notice).toContain('stub work complete');
     });
 
@@ -190,7 +190,7 @@ describe('job runner', () => {
       await waitFor(() => notices.length >= 1);
       expect(notices).toHaveLength(1);
       expect(notices[0]?.job.status).toBe('failed');
-      expect(notices[0]?.notice).toContain('Job failed');
+      expect(notices[0]?.notice).toContain('❌ **test job** — test failed after 1 attempt(s)');
       expect(notices[0]?.notice).toContain(expected);
       // Failure notices carry the log tail.
       expect(notices[0]?.notice).toContain('log line 12');
@@ -256,7 +256,7 @@ describe('job runner', () => {
       // transition — no failure path, no retry row, no second notice.
       await new Promise((r) => setTimeout(r, 200));
       expect(notices).toHaveLength(1);
-      expect(notices[0]?.notice).toContain('Job killed');
+      expect(notices[0]?.notice).toContain('⏹ **test job** — test killed');
       expect(runner.list()).toHaveLength(1);
       expect(runner.get(record.id)?.attempts).toBe(0);
     });

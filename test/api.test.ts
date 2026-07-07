@@ -98,6 +98,7 @@ describe('control API (/api/v1)', () => {
         ['GET', '/api/v1/jobs/some-id'],
         ['POST', '/api/v1/jobs/some-id/kill'],
         ['POST', '/api/v1/session/rotate'],
+        ['POST', '/api/v1/deliver'],
       ] as const) {
         const res = await call(method, path);
         expect(res.status, `${method} ${path}`).toBe(403);
