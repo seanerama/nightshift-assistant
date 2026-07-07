@@ -526,8 +526,12 @@ export function createSitePromoter(deps: PromoterDeps, hooks: SitePromoterHooks 
       return `\`${promote.bunPath} run build\` passed — ${r.slug}/index.html rendered`;
     }
     // Astro's content cache can go stale when a new collection entry lands —
-    // clear .astro/dist and rebuild once (the reference's retry).
+    // clear the caches and rebuild once (the reference's retry). Astro 5 moved
+    // the content-layer data store to node_modules/.astro (repro'd live
+    // 2026-07-07: a fresh studyGuides YAML rendered no page until that store
+    // was cleared); clear BOTH locations so the retry works on any version.
     rmSync(join(repo(), '.astro'), { recursive: true, force: true });
+    rmSync(join(repo(), 'node_modules', '.astro'), { recursive: true, force: true });
     rmSync(join(repo(), 'dist'), { recursive: true, force: true });
     result = await runTool(promote.bunPath, ['run', 'build'], repo(), buildTimeoutMs);
     if (result.code !== 0 || !existsSync(distIndex)) {

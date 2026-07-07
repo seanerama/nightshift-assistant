@@ -494,6 +494,8 @@ export function makeWebsiteRepo(dir: string): WebsiteRepoFixture {
  *   <dir>/bun-fail    → the build exits 1
  *   <dir>/bun-hook    → executed (cwd = repo) before rendering — tests use it
  *                       to inject remote drift between stage and push
+ *   <dir>/bun-stale-store → while node_modules/.astro exists in the repo the
+ *                       build renders NOTHING (Astro 5 stale data store)
  *   <dir>/bun-invocations.log → one line per stub invocation
  */
 export function makeBunStub(dir: string): { bunPath: string; invocations(): string[] } {
@@ -505,6 +507,9 @@ export function makeBunStub(dir: string): { bunPath: string; invocations(): stri
     `if [ -e "${join(dir, 'bun-fail')}" ]; then echo "injected build failure" >&2; exit 1; fi`,
     'if [ "$1" = "run" ] && [ "$2" = "build" ]; then',
     `  if [ -x "${join(dir, 'bun-hook')}" ]; then "${join(dir, 'bun-hook')}"; fi`,
+    // Stale Astro 5 data store: while node_modules/.astro exists, new entries
+    // are invisible to the build (the 2026-07-07 live incident).
+    `  if [ -e "${join(dir, 'bun-stale-store')}" ] && [ -d "node_modules/.astro" ]; then exit 0; fi`,
     '  for d in public/study-guides/*/; do',
     '    [ -d "$d" ] || continue',
     '    slug=$(basename "$d")',
