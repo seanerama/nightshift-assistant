@@ -34,12 +34,16 @@ Usage:
                                    attachment (allowed roots: ~/projects and the
                                    app's jobs/ + logs/ dirs)
   nightshift promote <path> [--slug <s>] [--title <t>] [--dry-run|--yes]
-                                   Promote a content dir (~/projects) to a live
-                                   https://<slug> site via GitHub + Coolify +
-                                   Cloudflare. DRY RUN IS THE DEFAULT — the plan
-                                   is printed and nothing executes; pass --yes
-                                   to execute (runs in the background, result
-                                   arrives as a 🚀 notice in Webex)
+                                   Promote a content dir (~/projects). STUDY
+                                   content deploys into the Astro website at
+                                   https://www.<domain>/study-guides/<slug>
+                                   (staged + built + pushed; hosting
+                                   auto-deploys); story promotion is not yet
+                                   designed (rejected). DRY RUN IS THE DEFAULT
+                                   — the plan is printed and nothing executes;
+                                   pass --yes to execute (runs in the
+                                   background, result arrives as a 🚀 notice
+                                   in Webex)
   nightshift rotate                Rotate the conversational session (manual)
   nightshift status                Daemon status (version, uptime, session, job counts)
 
@@ -306,7 +310,8 @@ async function runCommand(conn, parsed) {
       };
     }
     case 'promote': {
-      // 1:1 face of POST /api/v1/promote (contracts/promotion.md). DRY RUN IS
+      // 1:1 face of POST /api/v1/promote (contracts/promotion.md +
+      // site-promotion.md — the daemon routes by content shape). DRY RUN IS
       // THE DEFAULT: with neither --dry-run nor --yes, confirm stays false —
       // the plan is printed and nothing executes.
       const target = positionals[0];

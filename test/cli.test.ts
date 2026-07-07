@@ -20,7 +20,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { type App, createApp } from '../src/app.js';
-import { makeConfig, makeTestLogger, WORKER_STUB, waitFor } from './helpers.js';
+import { makeConfig, makeTestLogger, makeWebsiteRepo, WORKER_STUB, waitFor } from './helpers.js';
 
 const BIN = fileURLToPath(new URL('../bin/nightshift', import.meta.url));
 const TOKEN = 'cli-test-token';
@@ -285,14 +285,17 @@ describe('nightshift promote (CLI, promotion enabled)', () => {
     contentDir = join(tmpDir, 'projects', 'subnet-study');
     mkdirSync(join(contentDir, 'guides'), { recursive: true });
     writeFileSync(join(contentDir, 'guides', 'chapter-01.html'), '<p>one</p>');
-    // Dry runs never touch the infra, so the unreachable makeConfig promote
-    // defaults are exactly right — any accidental execution would fail loudly.
+    // Dry runs never touch the infra, so beyond the website repo (resolved
+    // read-only for the plan) the unreachable makeConfig promote defaults are
+    // exactly right — any accidental execution would fail loudly.
+    const website = makeWebsiteRepo(tmpDir);
     app = createApp(
       makeConfig({
         agentBin: WORKER_STUB,
         controlEnabled: true,
         apiToken: TOKEN,
         promoteEnabled: true,
+        promote: { ...makeConfig().promote, websiteRepo: website.repoDir },
       }),
       makeTestLogger(),
       { appDir: tmpDir, home: tmpDir },
@@ -315,10 +318,15 @@ describe('nightshift promote (CLI, promotion enabled)', () => {
     expect(res.code).toBe(0);
     expect(res.stdout).toContain('status:    planned');
     expect(res.stdout).toContain('slug:      subnet-study');
-    expect(res.stdout).toContain('url:       https://subnet-study.example.test');
-    expect(res.stdout).toContain('repo:      https://github.com/seanerama/subnet-study');
+    // Stage 13: study content targets the website, never a subdomain.
+    expect(res.stdout).toContain('url:       https://www.example.test/study-guides/subnet-study');
+    expect(res.stdout).not.toContain('https://subnet-study.example.test');
     expect(res.stdout).toContain('ok   validate');
+    expect(res.stdout).toContain('ok   stage');
+    expect(res.stdout).toContain('ok   build');
+    expect(res.stdout).toContain('ok   push');
     expect(res.stdout).toContain('ok   health');
+    expect(res.stdout).not.toContain('ok   coolify');
     expect(res.stdout).toContain('NOTHING was executed');
     expect(res.stdout).toContain('Re-run with --yes to execute');
     // Proof nothing ran: the source dir gained no .git.

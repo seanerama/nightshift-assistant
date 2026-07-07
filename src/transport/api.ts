@@ -184,9 +184,12 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
       return;
     }
 
-    // POST /api/v1/promote — contracts/promotion.md (Stage 11, additive on the
-    // frozen control-api v1 surface). Own kill-switch behind the two control
-    // gates: NIGHTSHIFT_PROMOTE_ENABLED not "true" → 403 (dark by default).
+    // POST /api/v1/promote — contracts/promotion.md + site-promotion.md
+    // (Stages 11/13, additive on the frozen control-api v1 surface). The
+    // wired promoter is the ROUTER: study content → the website pipeline,
+    // story content → 400 (not yet designed). Own kill-switch behind the two
+    // control gates: NIGHTSHIFT_PROMOTE_ENABLED not "true" → 403 (dark by
+    // default).
     // Body { path, slug?, title?, confirm }. confirm false/absent → DRY RUN,
     // handled synchronously (plan only, zero side effects). confirm:true →
     // the pipeline runs ASYNC after this response (a real promotion takes

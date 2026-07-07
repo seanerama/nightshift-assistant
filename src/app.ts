@@ -16,6 +16,8 @@ import { createJobRunner, type JobRunner } from './jobs/runner.js';
 import type { Logger } from './log.js';
 import { selectAutoAttach } from './notices.js';
 import { createPromoter, type PromoterHooks } from './promotion/pipeline.js';
+import { createPromotionRouter } from './promotion/route.js';
+import { createSitePromoter, type SitePromoterHooks } from './promotion/site.js';
 import {
   createSessionManager,
   type SessionManager,
@@ -56,6 +58,8 @@ export type AppHooks = Omit<SessionManagerHooks, 'notify'> & {
   home?: string;
   /** Stage 11 promotion seams (git/gh PATH shim env, retry bounds) — tests only. */
   promote?: PromoterHooks;
+  /** Stage 13 site-promotion seams (spawn env, health/build bounds) — tests only. */
+  site?: SitePromoterHooks;
 };
 
 export function createApp(
@@ -143,25 +147,32 @@ export function createApp(
     }
   });
 
-  // Promotion module (Stage 11, ADR 0008): daemon-resident deterministic
-  // pipeline; the 🚀 completion/failure notice reuses the same owner-room
-  // tracking as rotation and job finishes. Constructed unconditionally —
-  // the API endpoint owns the NIGHTSHIFT_PROMOTE_ENABLED kill-switch.
-  const promoter = createPromoter(
-    {
-      db,
-      log,
-      config,
-      notify: async (text: string): Promise<void> => {
-        if (lastOwnerRoomId === null) {
-          log.info('promotion notice skipped: no owner room seen yet');
-          return;
-        }
-        await sender.send({ roomId: lastOwnerRoomId }, text);
-      },
-    },
-    { home, ...(sessionHooks.promote ?? {}) },
-  );
+  // Promotion modules (Stages 11 + 13, ADR 0008): daemon-resident
+  // deterministic pipelines; the 🚀 completion/failure notices reuse the same
+  // owner-room tracking as rotation and job finishes. Constructed
+  // unconditionally — the API endpoint owns the NIGHTSHIFT_PROMOTE_ENABLED
+  // kill-switch. The ROUTER is the promote face: study content → the website
+  // pipeline (contracts/site-promotion.md), story content → explicit
+  // rejection; the subdomain pipeline is retained for future app promotion
+  // but is unreachable for study/story content.
+  const promoteNotify = async (text: string): Promise<void> => {
+    if (lastOwnerRoomId === null) {
+      log.info('promotion notice skipped: no owner room seen yet');
+      return;
+    }
+    await sender.send({ roomId: lastOwnerRoomId }, text);
+  };
+  const promoterDeps = { db, log, config, notify: promoteNotify };
+  const subdomainPromoter = createPromoter(promoterDeps, {
+    home,
+    ...(sessionHooks.promote ?? {}),
+  });
+  const sitePromoter = createSitePromoter(promoterDeps, { home, ...(sessionHooks.site ?? {}) });
+  const promoter = createPromotionRouter({
+    site: sitePromoter,
+    subdomain: subdomainPromoter,
+    home,
+  });
 
   const server = createTransportServer({
     config,

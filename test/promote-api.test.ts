@@ -1,11 +1,12 @@
 /**
- * POST /api/v1/promote (Stage 11, additive on control-api v1) against a real
- * app instance: the three gates in order (control kill-switch → bearer →
+ * POST /api/v1/promote (Stages 11 + 13, additive on control-api v1) against a
+ * real app instance: the three gates in order (control kill-switch → bearer →
  * NIGHTSHIFT_PROMOTE_ENABLED), dry-run as the wire default (confirm absent →
  * planned, zero side effects), the async execute contract (immediate
- * 'running' record; 'live' lands in the background), and 400s for bad bodies
- * — the pipeline is the real one, with fixture servers + a git/gh PATH shim
- * at the seams.
+ * 'running' record; 'live' lands in the background), the Stage 13 routing
+ * (study → the website pipeline; story → explicit 400), and 400s for bad
+ * bodies — the pipelines are the real ones, with a fixture website repo, the
+ * bun stub, fixture servers, and a git/gh PATH shim at the seams.
  */
 
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -19,12 +20,15 @@ import {
   type CloudflareStub,
   type CoolifyStub,
   type HealthStub,
+  makeBunStub,
   makeConfig,
   makeTestLogger,
   makeToolShim,
+  makeWebsiteRepo,
   startCloudflareStub,
   startCoolifyStub,
   startHealthStub,
+  type WebsiteRepoFixture,
   WORKER_STUB,
   waitFor,
 } from './helpers.js';
@@ -41,6 +45,8 @@ describe('POST /api/v1/promote', () => {
   let cloudflare: CloudflareStub;
   let health: HealthStub;
   let shim: ReturnType<typeof makeToolShim>;
+  let website: WebsiteRepoFixture;
+  let bun: ReturnType<typeof makeBunStub>;
 
   const makeApp = async (overrides: Partial<Config> = {}): Promise<App> => {
     const a = createApp(
@@ -54,6 +60,8 @@ describe('POST /api/v1/promote', () => {
           coolifyApiUrl: coolify.baseUrl,
           cfApiBase: cloudflare.baseUrl,
           healthBase: health.baseUrl,
+          websiteRepo: website.repoDir,
+          bunPath: bun.bunPath,
         },
         ...overrides,
       }),
@@ -62,6 +70,7 @@ describe('POST /api/v1/promote', () => {
         appDir: tmpDir,
         home: tmpDir,
         promote: { env: shim.env, healthRetries: 2, healthIntervalMs: 20, deployIntervalMs: 20 },
+        site: { healthRetries: 2, healthIntervalMs: 20 },
       },
     );
     const port = await a.listen();
@@ -98,6 +107,8 @@ describe('POST /api/v1/promote', () => {
     cloudflare = await startCloudflareStub();
     health = await startHealthStub();
     shim = makeToolShim(tmpDir);
+    website = makeWebsiteRepo(tmpDir);
+    bun = makeBunStub(tmpDir);
     app = null;
   });
 
@@ -134,7 +145,7 @@ describe('POST /api/v1/promote', () => {
     expect(unauthorized.status).toBe(401);
   });
 
-  it('confirm absent → DRY RUN: planned record + step plan, zero side effects', async () => {
+  it('confirm absent → DRY RUN: planned record + the SITE step plan, zero side effects', async () => {
     const a = await makeApp();
     const res = await call({ path: contentDir });
     expect(res.status).toBe(200);
@@ -142,11 +153,22 @@ describe('POST /api/v1/promote', () => {
     expect(json.ok).toBe(true);
     expect(json.promotion.status).toBe('planned');
     expect(json.promotion.slug).toBe(SLUG);
-    expect(json.promotion.steps).toHaveLength(7);
+    // Stage 13: study content plans the 6 website steps, never the subdomain 7.
+    expect(json.promotion.steps.map((s) => s.name)).toEqual([
+      'validate',
+      'scan',
+      'stage',
+      'build',
+      'push',
+      'health',
+    ]);
+    expect(json.promotion.url).toBe(`https://www.example.test/study-guides/${SLUG}`);
     expect(recordOf(a, SLUG)?.status).toBe('planned');
     expect(shim.invocations()).toEqual([]);
     expect(coolify.requests).toEqual([]);
+    expect(bun.invocations()).toEqual([]);
     expect(existsSync(join(contentDir, '.git'))).toBe(false);
+    expect(existsSync(join(website.repoDir, 'public', 'study-guides', SLUG))).toBe(false);
   });
 
   it('confirm:true → responds immediately with the running record; live lands async', async () => {
@@ -158,6 +180,22 @@ describe('POST /api/v1/promote', () => {
     expect(json.promotion.status).toBe('running'); // the async contract
     await waitFor(() => recordOf(a, SLUG)?.status === 'live');
     expect(recordOf(a, SLUG)?.steps.every((s) => s.ok)).toBe(true);
+    // The website pipeline did the work; the subdomain infra never saw traffic.
+    expect(bun.invocations()).toContain('bun run build');
+    expect(coolify.requests).toEqual([]);
+    expect(cloudflare.requests).toEqual([]);
+  });
+
+  it('story content → explicit 400 "story promotion not yet designed"', async () => {
+    await makeApp();
+    const storyDir = join(tmpDir, 'projects', 'brave-turtle');
+    mkdirSync(storyDir, { recursive: true });
+    writeFileSync(join(storyDir, 'brave-turtle-final.mp4'), 'not-really-video');
+    const res = await call({ path: storyDir, confirm: true });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toContain(
+      'story promotion not yet designed',
+    );
   });
 
   it('400s: missing path, non-string slug/title, non-boolean confirm, escaping path', async () => {

@@ -1,5 +1,6 @@
 /** Shared test scaffolding: capturing logger, test config, Webex fixture server, HMAC signer. */
 
+import { execFileSync } from 'node:child_process';
 import { createHmac } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
@@ -77,6 +78,8 @@ export function makeConfig(overrides: Partial<Config> = {}): Config {
       domain: 'example.test',
       cfApiBase: 'http://127.0.0.1:1/client/v4',
       healthBase: '',
+      websiteRepo: '', // site-promotion tests point this at a fixture repo
+      bunPath: 'bun', // never invoked unless a test wires the bun stub
     },
     ...overrides,
   };
@@ -419,6 +422,102 @@ export function makeToolShim(dir: string): {
   return {
     shimDir,
     env: { ...process.env, PATH: `${shimDir}:${process.env.PATH ?? ''}` },
+    invocations(): string[] {
+      if (!existsSync(logPath)) return [];
+      return readFileSync(logPath, 'utf8').trim().split('\n').filter(Boolean);
+    },
+  };
+}
+
+// ── Stage 13 site-promotion fixtures ────────────────────────────────────────
+
+/**
+ * A REAL temp git website repo with the Astro layout dirs, a local bare
+ * `origin`, and one pre-existing study guide (order: 3) so shared-repo safety
+ * and order numbering are observable. Git is real (dirty checks, rebase,
+ * push); only the BUILD is stubbed — see makeBunStub.
+ */
+export interface WebsiteRepoFixture {
+  /** The working clone the daemon stages into (config.promote.websiteRepo). */
+  repoDir: string;
+  /** The bare origin the push step lands on. */
+  originDir: string;
+  /** `git -C <repoDir|originDir> <args>` (trimmed stdout). */
+  git(cwd: string, ...args: string[]): string;
+}
+
+export function makeWebsiteRepo(dir: string): WebsiteRepoFixture {
+  const repoDir = join(dir, 'website');
+  const originDir = join(dir, 'website-origin.git');
+  const git = (cwd: string, ...args: string[]): string =>
+    execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', timeout: 30_000 }).trim();
+
+  mkdirSync(repoDir, { recursive: true });
+  git(repoDir, 'init', '-b', 'main');
+  git(repoDir, 'config', 'user.email', 'test@example.test');
+  git(repoDir, 'config', 'user.name', 'Test');
+
+  // The Astro layout the contract consumes + a package.json whose build the
+  // bun stub "runs". node_modules exists so the pipeline skips bun install.
+  mkdirSync(join(repoDir, 'public', 'study-guides'), { recursive: true });
+  mkdirSync(join(repoDir, 'src', 'content', 'studyGuides'), { recursive: true });
+  mkdirSync(join(repoDir, 'src', 'content', 'textbooks'), { recursive: true });
+  mkdirSync(join(repoDir, 'node_modules'), { recursive: true });
+  writeFileSync(join(repoDir, 'node_modules', '.keep'), '');
+  // Like the real Astro repo: build outputs + deps never count as dirt.
+  writeFileSync(join(repoDir, '.gitignore'), 'node_modules\ndist\n.astro\n');
+  writeFileSync(
+    join(repoDir, 'package.json'),
+    JSON.stringify({ name: 'website', scripts: { build: 'astro build' } }, null, 2),
+  );
+  writeFileSync(
+    join(repoDir, 'src', 'content', 'studyGuides', 'existing.yaml'),
+    'title: "Existing Guide"\nslug: "existing"\ndescription: "Already deployed."\norder: 3\nchapters:\n  - title: "One"\n    htmlFile: "chapter-01.html"\n',
+  );
+  mkdirSync(join(repoDir, 'public', 'study-guides', 'existing'), { recursive: true });
+  writeFileSync(join(repoDir, 'public', 'study-guides', 'existing', 'chapter-01.html'), '<p>e</p>');
+  git(repoDir, 'add', '-A');
+  git(repoDir, 'commit', '-m', 'seed website');
+
+  execFileSync('git', ['init', '--bare', originDir], { encoding: 'utf8', timeout: 30_000 });
+  git(originDir, 'symbolic-ref', 'HEAD', 'refs/heads/main'); // clones land on main
+  git(repoDir, 'remote', 'add', 'origin', originDir);
+  git(repoDir, 'push', '-u', 'origin', 'main');
+
+  return { repoDir, originDir, git };
+}
+
+/**
+ * The BUN seam (never a real bun build in CI): a stub whose `run build`
+ * renders dist/study-guides/<slug>/index.html for every staged slug. Control
+ * files live OUTSIDE the repo (a dirty repo would trip the safety check):
+ *   <dir>/bun-fail    → the build exits 1
+ *   <dir>/bun-hook    → executed (cwd = repo) before rendering — tests use it
+ *                       to inject remote drift between stage and push
+ *   <dir>/bun-invocations.log → one line per stub invocation
+ */
+export function makeBunStub(dir: string): { bunPath: string; invocations(): string[] } {
+  const bunPath = join(dir, 'bun-stub');
+  const logPath = join(dir, 'bun-invocations.log');
+  const script = [
+    '#!/bin/sh',
+    `echo "bun $*" >> "${logPath}"`,
+    `if [ -e "${join(dir, 'bun-fail')}" ]; then echo "injected build failure" >&2; exit 1; fi`,
+    'if [ "$1" = "run" ] && [ "$2" = "build" ]; then',
+    `  if [ -x "${join(dir, 'bun-hook')}" ]; then "${join(dir, 'bun-hook')}"; fi`,
+    '  for d in public/study-guides/*/; do',
+    '    [ -d "$d" ] || continue',
+    '    slug=$(basename "$d")',
+    '    mkdir -p "dist/study-guides/$slug"',
+    '    echo "<html>built $slug</html>" > "dist/study-guides/$slug/index.html"',
+    '  done',
+    'fi',
+    'exit 0',
+    '',
+  ].join('\n');
+  writeFileSync(bunPath, script, { mode: 0o755 });
+  return {
+    bunPath,
     invocations(): string[] {
       if (!existsSync(logPath)) return [];
       return readFileSync(logPath, 'utf8').trim().split('\n').filter(Boolean);
