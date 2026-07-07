@@ -8,9 +8,19 @@
  * extended Stage-2 argv-equality test).
  */
 
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import {
+  chmodSync,
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import type Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Config } from '../src/config.js';
@@ -29,7 +39,13 @@ interface StubInvocation {
   args: string[];
   input: string;
   apiToken: string | null;
+  /** PATH as seen by the spawned agent (Stage 7 env capture). */
+  path: string | null;
 }
+
+/** The repo's committed CLI — copied into the test appDir's bin/ so the
+ * resolution test proves the REAL script runs from a PATH lookup. */
+const REAL_CLI = fileURLToPath(new URL('../bin/nightshift', import.meta.url));
 
 const inbound = (text: string): InboundMessage => ({
   schema: 1,
@@ -158,5 +174,64 @@ describe('control-enabled session spawn (Stage 5 gating)', () => {
     expect(prompt).toContain(CONTROL_PREAMBLE);
     expect(prompt).toContain('Owner drinks tea.');
     expect(prompt.indexOf(CONTROL_PREAMBLE)).toBeLessThan(prompt.indexOf('Owner drinks tea.'));
+  });
+
+  // Stage 7 regression (live repro 2026-07-06): under systemd the daemon's PATH
+  // lacks the CLI, so the session's bare `nightshift` was unresolvable and the
+  // model's ./bin/nightshift fallback was (correctly) denied. The fix prepends
+  // the app's committed CLI dir to the CHILD's PATH at the conversational
+  // spawn site.
+  it('session env PATH starts with <appDir>/bin and bare `nightshift` resolves end-to-end', async () => {
+    // Put the REAL committed CLI where the daemon's appDir layout has it.
+    const binDir = join(appDir, 'bin');
+    mkdirSync(binDir, { recursive: true });
+    copyFileSync(REAL_CLI, join(binDir, 'nightshift'));
+    chmodSync(join(binDir, 'nightshift'), 0o755);
+
+    const mgr = makeManager();
+    await mgr.relay(inbound('hello'));
+
+    // 1. String contract: <appDir>/bin leads, inherited PATH preserved after it.
+    const [call] = invocations();
+    const childPath = call?.path ?? '';
+    expect(childPath).toBe(`${binDir}:${process.env.PATH ?? ''}`);
+
+    // 2. End-to-end: a child spawned with EXACTLY that PATH resolves bare
+    //    `nightshift` (no path prefix) and --help exits 0 — no daemon, no token.
+    const run = spawnSync('nightshift', ['--help'], {
+      env: { PATH: childPath },
+      encoding: 'utf8',
+      timeout: 10_000,
+    });
+    expect(run.error).toBeUndefined(); // ENOENT here = resolution failed
+    expect(run.status).toBe(0);
+    expect(run.stdout).toContain('nightshift');
+  });
+
+  it('resumed turns get the same prepended PATH (every spawn, not just the first)', async () => {
+    const mgr = makeManager();
+    await mgr.relay(inbound('first'));
+    await mgr.relay(inbound('second'));
+
+    const calls = invocations();
+    expect(calls).toHaveLength(2);
+    for (const call of calls) {
+      expect(call.path?.startsWith(`${join(appDir, 'bin')}:`)).toBe(true);
+    }
+  });
+
+  it('preamble tells the session to invoke bare `nightshift`, never path-prefixed', () => {
+    expect(CONTROL_PREAMBLE).toContain('bare `nightshift');
+    expect(CONTROL_PREAMBLE).toContain('never');
+    expect(CONTROL_PREAMBLE.toLowerCase()).toContain('path');
+  });
+
+  it('flag-off spawn PATH is the inherited PATH untouched (byte-identical env)', async () => {
+    const mgr = makeManager({ controlEnabled: false, apiToken: '' });
+    await mgr.relay(inbound('hello'));
+
+    const [call] = invocations();
+    expect(call?.path).toBe(process.env.PATH ?? null);
+    expect(call?.apiToken).toBeNull();
   });
 });
