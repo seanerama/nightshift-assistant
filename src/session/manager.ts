@@ -47,9 +47,15 @@ import {
 import { buildSeed } from './seed.js';
 
 /**
- * Bash permission rule granting the conversational session EXACTLY the
- * nightshift CLI (contracts/control-api.md: "Bash(nightshift *) allowed at
- * spawn"). Matcher syntax VERIFIED against the installed claude CLI v2.1.201
+ * Bash permission rules granting the conversational session EXACTLY the
+ * nightshift CLI — in every spelling the model reaches for (Stage 12,
+ * issue #22): the 2026-07-07 live failure showed the session repeatedly
+ * invoking `bin/nightshift` despite the bare-invocation preamble line, and
+ * being (correctly) denied. Fighting model path instinct is a losing game;
+ * all three spellings are OUR binary, so all three are allowed as ONE
+ * space-separated --allowedTools value.
+ *
+ * Matcher syntax VERIFIED against the installed claude CLI v2.1.201
  * (2026-07-06): `claude --help` documents the space form — `--allowedTools
  * "Bash(git *) Edit"` — and a headless probe confirmed behavior: with
  * `--allowedTools "Bash(git *)"` the command `git --version` executed with no
@@ -58,7 +64,8 @@ import { buildSeed } from './seed.js';
  * but the space form is what both the CLI help and the frozen contract spell —
  * re-verify empirically before ever changing it.
  */
-export const NIGHTSHIFT_TOOL_RULE = 'Bash(nightshift *)';
+export const NIGHTSHIFT_TOOL_RULE =
+  'Bash(nightshift *) Bash(bin/nightshift *) Bash(./bin/nightshift *)';
 
 /**
  * Fixed capability preamble (Stage 5): appended to the system prompt of every
@@ -74,7 +81,8 @@ export const CONTROL_PREAMBLE = [
   '- `nightshift deliver <path> [--note "..."]` — send a file to the owner in Webex as an attachment (allowed roots: ~/projects and the app\'s jobs/ + logs/ dirs). Use it whenever the owner asks for a produced artifact.',
   '- `nightshift rotate` — rotate this conversational session (manual).',
   '- `nightshift status` — daemon status (version, uptime, session, job counts).',
-  'Invoke it as bare `nightshift …`, never with a path prefix (no `./bin/nightshift`, no absolute path) — path-prefixed invocations are denied by the permission rule.',
+  'Prefer invoking it as bare `nightshift …`; the `bin/nightshift` and `./bin/nightshift` spellings are also permitted — all three are the same binary.',
+  'DISPATCH HONESTY (mandatory): never state a job was submitted or dispatched unless the CLI actually returned a job id — quote that id in your reply. If a command is denied or fails, say so plainly and stop; never claim success you cannot quote.',
   'Add `--json` to any command for raw JSON. Job completion notices arrive in Webex on their own — do not poll or wait for jobs to finish.',
 ].join('\n');
 
@@ -205,12 +213,18 @@ export function createSessionManager(
 
   const runAgentTurn = (text: string, opts: AgentTurnOptions): Promise<AgentResult> =>
     new Promise((resolve) => {
-      const args = ['-p', '--output-format', 'json'];
+      // Stage 12: --model on EVERY conversational spawn, regardless of the
+      // control kill-switch — the model is explicit runtime config (never
+      // inherited from the host claude config), not a gated feature. This is
+      // the ONE deliberate exception to the flag-off byte-identical guarantee
+      // (test-pinned with a comment in test/rotation.test.ts).
+      const args = ['-p', '--output-format', 'json', '--model', config.model];
       // Stage 5, gated on the control flag: the tool rule on argv and the API
       // token in the env — this ONE spawn site only (workers go through
       // workerEnv(), which must never carry the token). With the flag off both
-      // spawn calls below are byte-identical to Stage 4 (no extra args, no env
-      // option — the child inherits process.env exactly as before).
+      // spawn calls below are byte-identical to Stage 4 PLUS the model flag
+      // (no other extra args, no env option — the child inherits process.env
+      // exactly as before).
       if (config.controlEnabled) args.push('--allowedTools', NIGHTSHIFT_TOOL_RULE);
       if (opts.resume !== undefined) args.push('--resume', opts.resume);
       if (opts.sessionId !== undefined) args.push('--session-id', opts.sessionId);

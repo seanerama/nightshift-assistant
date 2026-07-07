@@ -43,6 +43,16 @@ export interface Config {
   webexApiBase: string;
   /** Path to the claude binary (test seam; default "claude"). */
   agentBin: string;
+  /**
+   * Conversational model (Stage 12): passed as `--model` on EVERY
+   * conversational spawn — explicit, never inherited from the host claude
+   * config (which silently served Opus 4.7 for everything, issue #22).
+   * Runtime config, NOT a feature: applies regardless of the control
+   * kill-switch. Default claude-sonnet-5 (the front door routes/dispatches;
+   * responsiveness and cost win). Workers use the per-type registry models
+   * instead (src/jobs/types.ts).
+   */
+  model: string;
   /** SQLite database file path. */
   dbPath: string;
   /** HTTP listen port (loopback only — the bind address is not configurable). */
@@ -147,6 +157,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   const port = Number.parseInt(env.NIGHTSHIFT_PORT ?? '3777', 10);
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new ConfigError(`NIGHTSHIFT_PORT is not a valid port: ${env.NIGHTSHIFT_PORT}`);
+  }
+
+  // Conversational model (Stage 12): '' is treated as unset (matching the
+  // other optional vars), but a set value must be a non-blank model id —
+  // whitespace garbage fails fast rather than spawning `--model " "`.
+  let model = 'claude-sonnet-5';
+  if (env.NIGHTSHIFT_MODEL !== undefined && env.NIGHTSHIFT_MODEL !== '') {
+    model = env.NIGHTSHIFT_MODEL.trim();
+    if (model === '') {
+      throw new ConfigError('NIGHTSHIFT_MODEL must be a non-empty model id (e.g. claude-sonnet-5)');
+    }
   }
 
   const turnTimeoutSec = Number.parseInt(env.NIGHTSHIFT_TURN_TIMEOUT_SEC ?? '300', 10);
@@ -333,6 +354,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     webexOwnerPersonId,
     webexApiBase: env.WEBEX_API_BASE ?? 'https://webexapis.com/v1',
     agentBin: env.NIGHTSHIFT_AGENT_BIN ?? 'claude',
+    model,
     dbPath: env.NIGHTSHIFT_DB_PATH ?? 'data/nightshift.db',
     port,
     turnTimeoutSec,

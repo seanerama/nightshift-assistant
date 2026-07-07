@@ -25,6 +25,13 @@ describe('job-type registry', () => {
     expect(knownJobTypes()).toEqual(['generic', 'story', 'study', 'brief', 'app-build']);
   });
 
+  it('assigns the Stage 12 per-type worker models (deliberate, never host-inherited)', () => {
+    expect(getJobType('generic')?.model).toBe('claude-sonnet-5');
+    for (const t of ['story', 'study', 'brief', 'app-build']) {
+      expect(getJobType(t)?.model, `${t} runs on Opus`).toBe('claude-opus-4-8');
+    }
+  });
+
   describe('rendering per type', () => {
     it('story → /story:start with the idea, ~/projects/<slug> workdir, scoped write profile', () => {
       const r = renderJobType('story', { idea: 'a turtle who is afraid of water' }, HOME);
@@ -38,6 +45,7 @@ describe('job-type registry', () => {
       expect(r.permissionArgs).toContain('--allowedTools');
       expect(r.extraEnv).toContain('ELEVENLABS_API_KEY');
       expect(r.extraEnv).toContain('GEMINI_API_KEY');
+      expect(r.model).toBe('claude-opus-4-8'); // Stage 12: pipeline workers run Opus
     });
 
     it('story title param drives the slug, the job title, and the instruction', () => {
@@ -75,6 +83,7 @@ describe('job-type registry', () => {
       expect(r.workdir).toBe(join(HOME, 'projects', 'habits'));
       expect(r.permissionArgs).toEqual(['--permission-mode', 'bypassPermissions']);
       expect(r.extraEnv).toEqual([]);
+      expect(r.model).toBe('claude-opus-4-8'); // Stage 12
       expect(getJobType('app-build')?.experimental).toBe(true);
     });
 
@@ -89,6 +98,7 @@ describe('job-type registry', () => {
       expect(r.title).toBe('echo job');
       expect(r.permissionArgs).toEqual([]);
       expect(r.extraEnv).toEqual([]);
+      expect(r.model).toBe('claude-sonnet-5'); // Stage 12: generic stays on Sonnet
       expect(getJobType('generic')?.experimental).toBe(false);
     });
   });
