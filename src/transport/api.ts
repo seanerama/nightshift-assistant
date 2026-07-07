@@ -11,7 +11,8 @@
  *      mismatch; FAIL CLOSED when the configured token is empty (401 for all).
  *
  * Error mapping: JobError (invalid submit / disabled runner / illegal kill)
- * → 400 with the error message; unknown job id → 404; anything else → 500.
+ * → 400 with the error message; DeliverError → its own 400/409;
+ * AttachmentError (over-cap file) → 400; unknown job id → 404; anything else → 500.
  */
 
 import { createHash, timingSafeEqual } from 'node:crypto';
@@ -21,6 +22,8 @@ import { JobError, type JobRunner } from '../jobs/runner.js';
 import type { Logger } from '../log.js';
 import type { SessionManager } from '../session/manager.js';
 import type { JobStatus, JobSubmit } from '../types.js';
+import { DeliverError, type Deliverer } from './deliver.js';
+import { AttachmentError } from './send.js';
 import { readRawBody, respond } from './server.js';
 
 const JOB_STATUSES: readonly string[] = ['queued', 'running', 'succeeded', 'failed', 'killed'];
@@ -30,6 +33,8 @@ export interface ApiDeps {
   log: Logger;
   jobs: JobRunner;
   sessions: SessionManager;
+  /** Stage 10 (additive on control-api v1): POST /api/v1/deliver. */
+  deliver: Deliverer;
   version: string;
 }
 
@@ -51,7 +56,7 @@ function tokenMatches(header: string | undefined, expected: string): boolean {
 }
 
 export function createApiHandler(deps: ApiDeps): ApiHandler {
-  const { config, log, jobs, sessions, version } = deps;
+  const { config, log, jobs, sessions, deliver, version } = deps;
   const startedAt = Date.now();
 
   /** Parse a POST body as JSON; an empty body is {} (rotate takes no required fields). */
@@ -151,6 +156,31 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
       return;
     }
 
+    // POST /api/v1/deliver — body { path, note? } (Stage 10, additive on the
+    // frozen v1 surface). Path confinement + owner-room resolution live in the
+    // deliverer; DeliverError maps to 400/409 in the catch below.
+    if (method === 'POST' && path === '/api/v1/deliver') {
+      let body: unknown;
+      try {
+        body = await readJsonBody(req);
+      } catch {
+        respond(res, 400, { ok: false, error: 'invalid JSON body' });
+        return;
+      }
+      const { path: filePath, note } = body as { path?: unknown; note?: unknown };
+      if (typeof filePath !== 'string' || filePath === '') {
+        respond(res, 400, { ok: false, error: 'deliver requires "path" (non-empty string)' });
+        return;
+      }
+      if (note !== undefined && typeof note !== 'string') {
+        respond(res, 400, { ok: false, error: '"note" must be a string when present' });
+        return;
+      }
+      const delivered = await deliver.deliver(filePath, note);
+      respond(res, 200, { ok: true, delivered });
+      return;
+    }
+
     // POST /api/v1/session/rotate — body { reason?: 'manual' }
     if (method === 'POST' && path === '/api/v1/session/rotate') {
       let body: unknown;
@@ -193,6 +223,15 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
   return (req, res): void => {
     handle(req, res).catch((err: unknown) => {
       if (err instanceof JobError) {
+        respond(res, 400, { ok: false, error: err.message });
+        return;
+      }
+      if (err instanceof DeliverError) {
+        respond(res, err.status, { ok: false, error: err.message });
+        return;
+      }
+      if (err instanceof AttachmentError) {
+        // Oversize/unreadable file at send time (e.g. over NIGHTSHIFT_ATTACH_MAX_MB).
         respond(res, 400, { ok: false, error: err.message });
         return;
       }

@@ -6,6 +6,8 @@
 
 import { readFileSync } from 'node:fs';
 import type { Server } from 'node:http';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type Database from 'better-sqlite3';
 import type { Config } from './config.js';
@@ -19,6 +21,7 @@ import {
   type SessionManagerHooks,
 } from './session/manager.js';
 import { createApiHandler } from './transport/api.js';
+import { createDeliverer } from './transport/deliver.js';
 import { AttachmentError, createSender } from './transport/send.js';
 import { createTransportServer } from './transport/server.js';
 import { createWebexClient } from './transport/webex.js';
@@ -61,6 +64,9 @@ export function createApp(
 ): App {
   const db = openDatabase(config.dbPath);
   migrate(db, MIGRATIONS_DIR, log);
+
+  const appDir = sessionHooks.appDir ?? process.cwd();
+  const home = sessionHooks.home ?? homedir();
 
   const webex = createWebexClient(config);
   const sender = createSender(webex, log, config);
@@ -143,8 +149,22 @@ export function createApp(
     onOwnerRoom: persistOwnerRoom,
     version: appVersion(),
     // Control API (Stage 5): mounted on the same loopback server; the handler
-    // owns its own kill-switch (403 dark by default) and bearer auth.
-    api: createApiHandler({ config, log, jobs, sessions, version: appVersion() }),
+    // owns its own kill-switch (403 dark by default) and bearer auth. The
+    // Stage 10 deliverer confines paths to ~/projects + the app's jobs/ and
+    // logs/ dirs and routes to the owner's persisted room.
+    api: createApiHandler({
+      config,
+      log,
+      jobs,
+      sessions,
+      deliver: createDeliverer({
+        sender,
+        roots: [join(home, 'projects'), join(appDir, 'jobs'), join(appDir, 'logs')],
+        ownerRoom: () => lastOwnerRoomId,
+        log,
+      }),
+      version: appVersion(),
+    }),
   });
 
   // Daily-rotation trigger: minimal in-daemon interval check (no external

@@ -71,6 +71,7 @@ export const CONTROL_PREAMBLE = [
   '- `nightshift submit --type <type> --title <title> --instruction <text> --workdir <dir>` — dispatch long-running work (builds, pipelines, research) as a background job. NEVER run long work inline in this conversation; always submit a job and reply immediately.',
   '- `nightshift jobs [--status <status>]` / `nightshift job <id>` — list jobs or inspect one.',
   '- `nightshift kill <id>` — stop a job.',
+  '- `nightshift deliver <path> [--note "..."]` — send a file to the owner in Webex as an attachment (allowed roots: ~/projects and the app\'s jobs/ + logs/ dirs). Use it whenever the owner asks for a produced artifact.',
   '- `nightshift rotate` — rotate this conversational session (manual).',
   '- `nightshift status` — daemon status (version, uptime, session, job counts).',
   'Invoke it as bare `nightshift …`, never with a path prefix (no `./bin/nightshift`, no absolute path) — path-prefixed invocations are denied by the permission rule.',
