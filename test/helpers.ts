@@ -58,6 +58,8 @@ export function makeConfig(overrides: Partial<Config> = {}): Config {
     controlEnabled: false, // Stage 5 ships dark; control tests flip it on
     apiToken: '',
     typesEnabled: false, // Stage 6 ships dark; job-type tests flip it on
+    attachMaxMb: 80,
+    autoAttachMaxMb: 10,
     ...overrides,
   };
 }
@@ -75,13 +77,44 @@ export interface StubMessage {
 
 export interface WebexStub {
   baseUrl: string;
-  /** Bodies of every POST /messages received. */
+  /**
+   * Bodies of every POST /messages received. JSON posts record the parsed
+   * body; multipart posts record the form fields plus `fileName` + `fileBytes`
+   * for the ONE `files` part a Webex message may carry.
+   */
   sends: Array<Record<string, unknown>>;
   /** Register a message GET /messages/:id will serve. */
   addMessage(msg: StubMessage): void;
   /** Make the next n POST /messages fail with 500 (send-failure tests). */
   failNext(n: number): void;
   close(): Promise<void>;
+}
+
+/** Minimal multipart/form-data parser for the fixture: fields + one file part. */
+function parseMultipart(body: Buffer, contentType: string): Record<string, unknown> {
+  const boundaryMatch = /boundary=(?:"([^"]+)"|([^;]+))/.exec(contentType);
+  const boundary = (boundaryMatch?.[1] ?? boundaryMatch?.[2] ?? '').trim();
+  const out: Record<string, unknown> = {};
+  // 'binary' keeps a 1:1 byte↔char mapping so byte counts stay exact.
+  for (const part of body.toString('binary').split(`--${boundary}`)) {
+    const headerEnd = part.indexOf('\r\n\r\n');
+    if (headerEnd === -1) continue;
+    const rawHeaders = part.slice(0, headerEnd);
+    const disposition =
+      /content-disposition:[^\r\n]*\bname="([^"]+)"(?:;\s*filename="([^"]*)")?/i.exec(rawHeaders);
+    if (disposition === null) continue;
+    const name = disposition[1] as string;
+    const filename = disposition[2];
+    let value = part.slice(headerEnd + 4);
+    if (value.endsWith('\r\n')) value = value.slice(0, -2);
+    if (filename !== undefined) {
+      out.fileName = filename;
+      out.fileBytes = value.length;
+    } else {
+      out[name] = Buffer.from(value, 'binary').toString('utf8');
+    }
+  }
+  return out;
 }
 
 /** Local HTTP fixture server standing in for the Webex API (the WEBEX_API_BASE seam). */
@@ -105,9 +138,9 @@ export async function startWebexStub(): Promise<WebexStub> {
       return;
     }
     if (req.method === 'POST' && url === '/v1/messages') {
-      let body = '';
+      const parts: Buffer[] = [];
       req.on('data', (d: Buffer) => {
-        body += d.toString('utf8');
+        parts.push(d);
       });
       req.on('end', () => {
         if (failRemaining > 0) {
@@ -116,7 +149,13 @@ export async function startWebexStub(): Promise<WebexStub> {
           res.end(JSON.stringify({ message: 'injected failure' }));
           return;
         }
-        sends.push(JSON.parse(body) as Record<string, unknown>);
+        const body = Buffer.concat(parts);
+        const contentType = req.headers['content-type'] ?? '';
+        if (contentType.startsWith('multipart/form-data')) {
+          sends.push(parseMultipart(body, contentType));
+        } else {
+          sends.push(JSON.parse(body.toString('utf8')) as Record<string, unknown>);
+        }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ id: `sent-${sends.length}` }));
       });

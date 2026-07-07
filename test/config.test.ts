@@ -49,6 +49,24 @@ describe('loadConfig', () => {
     expect(config.jobKillGraceSec).toBe(10);
     expect(config.controlEnabled).toBe(false); // control surface ships dark
     expect(config.apiToken).toBe('');
+    expect(config.attachMaxMb).toBe(80); // Stage 10 delivery knobs
+    expect(config.autoAttachMaxMb).toBe(10);
+  });
+
+  it('validates the Stage 10 attachment knobs (non-negative integers; 0 disables)', () => {
+    expect(loadConfig({ ...FULL_ENV, NIGHTSHIFT_ATTACH_MAX_MB: '50' }).attachMaxMb).toBe(50);
+    expect(loadConfig({ ...FULL_ENV, NIGHTSHIFT_ATTACH_MAX_MB: '0' }).attachMaxMb).toBe(0);
+    expect(() => loadConfig({ ...FULL_ENV, NIGHTSHIFT_ATTACH_MAX_MB: '-1' })).toThrow(ConfigError);
+    expect(() => loadConfig({ ...FULL_ENV, NIGHTSHIFT_ATTACH_MAX_MB: 'big' })).toThrow(ConfigError);
+
+    expect(loadConfig({ ...FULL_ENV, NIGHTSHIFT_AUTOATTACH_MAX_MB: '5' }).autoAttachMaxMb).toBe(5);
+    expect(loadConfig({ ...FULL_ENV, NIGHTSHIFT_AUTOATTACH_MAX_MB: '0' }).autoAttachMaxMb).toBe(0);
+    expect(() => loadConfig({ ...FULL_ENV, NIGHTSHIFT_AUTOATTACH_MAX_MB: '-2' })).toThrow(
+      ConfigError,
+    );
+    expect(() => loadConfig({ ...FULL_ENV, NIGHTSHIFT_AUTOATTACH_MAX_MB: 'ten' })).toThrow(
+      ConfigError,
+    );
   });
 
   it('validates NIGHTSHIFT_ACK_AFTER_SEC (non-negative integer; 0 disables)', () => {

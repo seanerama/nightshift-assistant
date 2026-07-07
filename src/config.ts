@@ -68,6 +68,17 @@ export interface Config {
    * session preamble omits the type list. Generic submits are unaffected.
    */
   typesEnabled: boolean;
+  /**
+   * Per-file attachment cap in MB for send()/deliver (Stage 10; Webex's own
+   * cap is ~100MB). Files over this are rejected with a clear error before
+   * anything is sent. 0 disables file attachments entirely.
+   */
+  attachMaxMb: number;
+  /**
+   * Auto-attach cap in MB (Stage 10): success-notice sentinel outputs at or
+   * under this size ride the notice (bounded count). 0 disables auto-attach.
+   */
+  autoAttachMaxMb: number;
 }
 
 export class ConfigError extends Error {}
@@ -204,6 +215,21 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   }
   const typesEnabled = typesRaw === 'true';
 
+  // Attachment knobs (Stage 10): non-negative integers; 0 disables the feature.
+  const attachMaxMb = Number.parseInt(env.NIGHTSHIFT_ATTACH_MAX_MB ?? '80', 10);
+  if (!Number.isInteger(attachMaxMb) || attachMaxMb < 0) {
+    throw new ConfigError(
+      `NIGHTSHIFT_ATTACH_MAX_MB is not a valid non-negative integer: ${env.NIGHTSHIFT_ATTACH_MAX_MB}`,
+    );
+  }
+
+  const autoAttachMaxMb = Number.parseInt(env.NIGHTSHIFT_AUTOATTACH_MAX_MB ?? '10', 10);
+  if (!Number.isInteger(autoAttachMaxMb) || autoAttachMaxMb < 0) {
+    throw new ConfigError(
+      `NIGHTSHIFT_AUTOATTACH_MAX_MB is not a valid non-negative integer: ${env.NIGHTSHIFT_AUTOATTACH_MAX_MB}`,
+    );
+  }
+
   const apiToken = env.NIGHTSHIFT_API_TOKEN ?? '';
   if (controlEnabled && apiToken === '') {
     throw new ConfigError(
@@ -232,5 +258,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     controlEnabled,
     apiToken,
     typesEnabled,
+    attachMaxMb,
+    autoAttachMaxMb,
   };
 }
