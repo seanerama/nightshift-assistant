@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.1
+
+### Other
+- [stage 13] Study promotion targets www/study-guides via the Astro website repo (#27)
+- Plan: site-promotion contract v1 + Stage 13 spec (study promotion → website repo)
+
 ## 0.6.0
 
 ### Other

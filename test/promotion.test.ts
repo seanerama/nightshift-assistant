@@ -457,6 +457,22 @@ describe('scanForSecrets (unit)', () => {
     ]);
   });
 
+  it('does not flag kebab-case heading anchors as sk- API keys (2026-07-07 incident)', () => {
+    writeFileSync(
+      join(dir, 'anchors.md'),
+      'see #sk-cheat-sheet and #sk-comparison-subnet-versus-wildcard plus ' +
+        '#sk-30-26-27-29-and-other-ip-address-cidr-network-references\n',
+    );
+    expect(scanForSecrets(dir)).toEqual([]);
+  });
+
+  it('still flags realistic sk- key shapes (long unbroken runs)', () => {
+    writeFileSync(join(dir, 'k1.txt'), `key sk-${'A1b2'.repeat(10)}`); // gitleaks:allow
+    writeFileSync(join(dir, 'k2.txt'), `key sk-proj-${'Zx9y'.repeat(8)}`); // gitleaks:allow
+    const hits = scanForSecrets(dir);
+    expect(hits.map((h) => h.file).sort()).toEqual(['k1.txt', 'k2.txt']);
+  });
+
   it('flags obvious token shapes in text content, once per file', () => {
     // gitleaks:allow — deliberate FIXTURE secrets testing our own scanner (AWS docs example key)
     writeFileSync(join(dir, 'a.md'), `token AKIAIOSFODNN7EXAMPLE plus ghp_${'a'.repeat(36)}`); // gitleaks:allow
