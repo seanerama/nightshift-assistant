@@ -79,6 +79,33 @@ export function rotationNotice(reason: RotationReason, summaryPath: string): str
   return `🌀 Session rotated (${reason}) — summary at ${summaryPath}`;
 }
 
+/** 🚀 promotion live (Stage 11): the URL is the payload — first line after the title. */
+export function promotionLiveNotice(input: {
+  title: string;
+  slug: string;
+  url: string;
+  repoUrl: string;
+}): string {
+  return (
+    `🚀 **${input.title}** — promotion \`${input.slug}\` is live\n` +
+    `${input.url}\n` +
+    `Repo: ${input.repoUrl}`
+  );
+}
+
+/** 🚀 promotion failed: the step that broke + why (steps stay queryable in the record). */
+export function promotionFailureNotice(input: {
+  title: string;
+  slug: string;
+  step: string;
+  error: string;
+}): string {
+  return (
+    `🚀 **${input.title}** — promotion \`${input.slug}\` FAILED at step \`${input.step}\`\n` +
+    `${input.error}`
+  );
+}
+
 /**
  * Pick the sentinel outputs that ride a success notice: existing regular
  * files at or under `maxMb`, first `maxFiles` of them (the rest — and

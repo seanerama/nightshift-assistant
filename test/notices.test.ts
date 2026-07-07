@@ -12,6 +12,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   failureNotice,
   killedNotice,
+  promotionFailureNotice,
+  promotionLiveNotice,
   rotationNotice,
   selectAutoAttach,
   successNotice,
@@ -102,6 +104,33 @@ describe('notice variants (golden strings)', () => {
   it('rotation', () => {
     expect(rotationNotice('daily', 'logs/daily/2026-07-06.md')).toBe(
       '🌀 Session rotated (daily) — summary at logs/daily/2026-07-06.md',
+    );
+  });
+
+  it('promotion live (Stage 11): 🚀 with the URL first, then the repo', () => {
+    const notice = promotionLiveNotice({
+      title: 'Subnetting Study',
+      slug: 'subnet-study',
+      url: 'https://subnet-study.seanmahoney.ai',
+      repoUrl: 'https://github.com/seanerama/subnet-study',
+    });
+    expect(notice).toBe(
+      '🚀 **Subnetting Study** — promotion `subnet-study` is live\n' +
+        'https://subnet-study.seanmahoney.ai\n' +
+        'Repo: https://github.com/seanerama/subnet-study',
+    );
+  });
+
+  it('promotion failed (Stage 11): 🚀 naming the failed step and the error', () => {
+    const notice = promotionFailureNotice({
+      title: 'Subnetting Study',
+      slug: 'subnet-study',
+      step: 'coolify',
+      error: 'Coolify app create returned HTTP 500',
+    });
+    expect(notice).toBe(
+      '🚀 **Subnetting Study** — promotion `subnet-study` FAILED at step `coolify`\n' +
+        'Coolify app create returned HTTP 500',
     );
   });
 });
