@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.0
+
+### Other
+- [stage 10] Delivery polish: Webex file attachments + formatted notices (#20)
+
 ## 0.4.0
 
 ### Other
