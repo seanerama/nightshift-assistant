@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.1
+
+### Fixes
+- prepend <appDir>/bin to the conversational session PATH (control-gated) (#14)
+
+### Other
+- Plan: Stage 7 bug spec — session PATH for the nightshift CLI
+
 ## 0.3.0
 
 ### Other
