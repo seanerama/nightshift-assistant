@@ -268,7 +268,7 @@ describe('promotion pipeline', () => {
       writeFileSync(join(contentDir, 'deploy-key.pem'), 'anything');
       writeFileSync(
         join(contentDir, 'notes.txt'),
-        'aws creds are AKIAIOSFODNN7EXAMPLE do not share\n',
+        'aws creds are AKIAIOSFODNN7EXAMPLE do not share\n', // gitleaks:allow
       );
 
       await promote({ confirm: true });
@@ -453,9 +453,10 @@ describe('scanForSecrets (unit)', () => {
   });
 
   it('flags obvious token shapes in text content, once per file', () => {
-    writeFileSync(join(dir, 'a.md'), `token AKIAIOSFODNN7EXAMPLE plus ghp_${'a'.repeat(36)}`);
+    // gitleaks:allow — deliberate FIXTURE secrets testing our own scanner (AWS docs example key)
+    writeFileSync(join(dir, 'a.md'), `token AKIAIOSFODNN7EXAMPLE plus ghp_${'a'.repeat(36)}`); // gitleaks:allow
     writeFileSync(join(dir, 'b.txt'), '-----BEGIN RSA PRIVATE KEY-----\nabc');
-    writeFileSync(join(dir, 'c.js'), 'const apiKey = "sk-live-abcdefgh12345678";');
+    writeFileSync(join(dir, 'c.js'), 'const apiKey = "sk-live-abcdefgh12345678";'); // gitleaks:allow
     const hits = scanForSecrets(dir);
     expect(hits.map((h) => h.file).sort()).toEqual(['a.md', 'b.txt', 'c.js']);
   });
