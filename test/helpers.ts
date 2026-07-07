@@ -45,6 +45,7 @@ export function makeConfig(overrides: Partial<Config> = {}): Config {
     webexOwnerPersonId: 'owner-person-id',
     webexApiBase: 'http://127.0.0.1:1/v1', // unreachable unless a test wires the stub
     agentBin: AGENT_STUB,
+    model: 'claude-sonnet-5', // Stage 12: the documented conversational default
     dbPath: ':memory:',
     port: 0, // ephemeral
     turnTimeoutSec: 10,

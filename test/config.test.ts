@@ -35,6 +35,7 @@ describe('loadConfig', () => {
     const config = loadConfig({ ...FULL_ENV });
     expect(config.webexApiBase).toBe('https://webexapis.com/v1');
     expect(config.agentBin).toBe('claude');
+    expect(config.model).toBe('claude-sonnet-5'); // Stage 12: explicit conversational model
     expect(config.dbPath).toBe('data/nightshift.db');
     expect(config.port).toBe(3777);
     expect(config.turnTimeoutSec).toBe(300);
@@ -245,6 +246,22 @@ describe('loadConfig', () => {
     });
     expect(config.promote.cfApiBase).toBe('http://127.0.0.1:9998/client/v4');
     expect(config.promote.healthBase).toBe('http://127.0.0.1:9997');
+  });
+
+  it('validates NIGHTSHIFT_MODEL (Stage 12): default sonnet-5, override honored, garbage rejected', () => {
+    expect(loadConfig({ ...FULL_ENV }).model).toBe('claude-sonnet-5');
+    expect(loadConfig({ ...FULL_ENV, NIGHTSHIFT_MODEL: 'claude-opus-4-8' }).model).toBe(
+      'claude-opus-4-8',
+    );
+    // '' is treated as unset, matching the other optional vars…
+    expect(loadConfig({ ...FULL_ENV, NIGHTSHIFT_MODEL: '' }).model).toBe('claude-sonnet-5');
+    // …but a SET value must be a non-blank model id (fail fast on garbage).
+    expect(() => loadConfig({ ...FULL_ENV, NIGHTSHIFT_MODEL: '   ' })).toThrow(ConfigError);
+    expect(() => loadConfig({ ...FULL_ENV, NIGHTSHIFT_MODEL: '\t\n' })).toThrow(/NIGHTSHIFT_MODEL/);
+    // Padded values are trimmed rather than spawning `--model " claude-x "`.
+    expect(loadConfig({ ...FULL_ENV, NIGHTSHIFT_MODEL: ' claude-sonnet-5 ' }).model).toBe(
+      'claude-sonnet-5',
+    );
   });
 
   it('honors the seam overrides (WEBEX_API_BASE, NIGHTSHIFT_AGENT_BIN)', () => {

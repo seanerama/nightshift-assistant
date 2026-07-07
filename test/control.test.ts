@@ -103,8 +103,26 @@ describe('control-enabled session spawn (Stage 5 gating)', () => {
     const idx = call?.args.indexOf('--allowedTools') ?? -1;
     expect(idx).toBeGreaterThan(-1);
     expect(call?.args[idx + 1]).toBe(NIGHTSHIFT_TOOL_RULE);
-    expect(call?.args[idx + 1]).toBe('Bash(nightshift *)');
+    // Stage 12 (issue #22): ONE space-separated value carrying all three
+    // spellings of OUR CLI — the model keeps reaching for visible paths.
+    expect(call?.args[idx + 1]).toBe(
+      'Bash(nightshift *) Bash(bin/nightshift *) Bash(./bin/nightshift *)',
+    );
     expect(call?.apiToken).toBe('test-api-token');
+  });
+
+  it('argv carries --model with the configured conversational model (Stage 12)', async () => {
+    const mgr = makeManager({ model: 'claude-opus-4-8' });
+    await mgr.relay(inbound('hello'));
+    await mgr.relay(inbound('again'));
+
+    const calls = invocations();
+    expect(calls).toHaveLength(2);
+    for (const call of calls) {
+      const idx = call.args.indexOf('--model');
+      expect(idx).toBeGreaterThan(-1);
+      expect(call.args[idx + 1]).toBe('claude-opus-4-8');
+    }
   });
 
   it('resumed turns keep the rule and the token (every spawn, not just the first)', async () => {
@@ -248,10 +266,25 @@ describe('control-enabled session spawn (Stage 5 gating)', () => {
     }
   });
 
-  it('preamble tells the session to invoke bare `nightshift`, never path-prefixed', () => {
+  it('preamble prefers bare `nightshift` and names the two permitted path spellings (Stage 12)', () => {
     expect(CONTROL_PREAMBLE).toContain('bare `nightshift');
-    expect(CONTROL_PREAMBLE).toContain('never');
-    expect(CONTROL_PREAMBLE.toLowerCase()).toContain('path');
+    expect(CONTROL_PREAMBLE).toContain('Prefer');
+    // Both path spellings are now acknowledged as permitted (issue #22) —
+    // the old "never with a path prefix" line is gone.
+    expect(CONTROL_PREAMBLE).toContain('`bin/nightshift`');
+    expect(CONTROL_PREAMBLE).toContain('`./bin/nightshift`');
+    expect(CONTROL_PREAMBLE).not.toContain('denied by the permission rule');
+  });
+
+  it('preamble carries the dispatch-honesty rule (Stage 12, issue #22)', () => {
+    expect(CONTROL_PREAMBLE).toContain('DISPATCH HONESTY');
+    // Never claim a dispatch without the CLI-returned job id — quote it.
+    expect(CONTROL_PREAMBLE).toContain('never state a job was submitted');
+    expect(CONTROL_PREAMBLE).toContain('job id');
+    expect(CONTROL_PREAMBLE).toContain('quote');
+    // On denial: say so plainly and stop.
+    expect(CONTROL_PREAMBLE).toContain('denied');
+    expect(CONTROL_PREAMBLE).toContain('say so plainly and stop');
   });
 
   it('flag-off spawn PATH is the inherited PATH untouched (byte-identical env)', async () => {
@@ -261,5 +294,9 @@ describe('control-enabled session spawn (Stage 5 gating)', () => {
     const [call] = invocations();
     expect(call?.path).toBe(process.env.PATH ?? null);
     expect(call?.apiToken).toBeNull();
+    // Stage 12: --model applies regardless of the control kill-switch (runtime
+    // config, not a feature) — the full flag-off argv pin lives in
+    // test/rotation.test.ts.
+    expect(call?.args).toContain('--model');
   });
 });

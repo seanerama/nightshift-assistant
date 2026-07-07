@@ -450,12 +450,25 @@ describe('rotation ritual (session-manager level)', () => {
       await mgr.relay(inbound('first'));
       await mgr.relay(inbound('second'));
 
+      // Stage 12 DELIBERATE RE-PIN: `--model` is runtime config, not a gated
+      // feature — it rides EVERY conversational spawn even with all
+      // kill-switches off. "Byte-identical to Stage 1" now means the Stage 1
+      // argv PLUS the explicit model flag (and nothing else): no
+      // --allowedTools, no --append-system-prompt, no token in the env.
       const calls = invocations();
-      expect(calls[0]?.args).toEqual(['-p', '--output-format', 'json']);
+      expect(calls[0]?.args).toEqual([
+        '-p',
+        '--output-format',
+        'json',
+        '--model',
+        'claude-sonnet-5',
+      ]);
       expect(calls[1]?.args).toEqual([
         '-p',
         '--output-format',
         'json',
+        '--model',
+        'claude-sonnet-5',
         '--resume',
         'sess-canned-1',
       ]);
