@@ -78,6 +78,18 @@ export const CONTROL_PREAMBLE = [
   'Add `--json` to any command for raw JSON. Job completion notices arrive in Webex on their own — do not poll or wait for jobs to finish.',
 ].join('\n');
 
+/**
+ * Promotion preamble (Stage 11): appended (after the control preamble) only
+ * when BOTH the control surface and NIGHTSHIFT_PROMOTE_ENABLED are on. The
+ * confirm discipline lives here: dry-run first, relay the plan, execute only
+ * after the operator explicitly confirms in the conversation (ADR 0008).
+ */
+export const PROMOTE_PREAMBLE = [
+  '- `nightshift promote <path> [--slug <s>] [--title <t>] [--dry-run|--yes]` — publish a content project from ~/projects to a live https://<slug> site (GitHub + Coolify + Cloudflare).',
+  '  PROMOTION DISCIPLINE (mandatory): ALWAYS run the dry run first (`nightshift promote <path>` — dry run is the default) and relay the returned plan (slug, URL, repo, steps) to the owner. Execute with `--yes` ONLY after the owner explicitly confirms in this conversation — never promote without that explicit confirmation.',
+  '  Execution runs in the background and takes minutes; the result arrives on its own as a 🚀 notice — do not poll.',
+].join('\n');
+
 interface AgentResult {
   ok: boolean;
   text: string;
@@ -404,6 +416,7 @@ export function createSessionManager(
       // (Stage 1 spawn shape).
       const parts: string[] = [];
       if (config.controlEnabled) parts.push(CONTROL_PREAMBLE);
+      if (config.controlEnabled && config.promoteEnabled) parts.push(PROMOTE_PREAMBLE);
       if (config.controlEnabled && config.typesEnabled) parts.push(jobTypesPreamble());
       if (config.rotationEnabled) {
         const seed = buildSeed(appDir, config.seedMaxBytes);

@@ -30,6 +30,7 @@ import {
   CONTROL_PREAMBLE,
   createSessionManager,
   NIGHTSHIFT_TOOL_RULE,
+  PROMOTE_PREAMBLE,
   type SessionManager,
 } from '../src/session/manager.js';
 import type { InboundMessage } from '../src/types.js';
@@ -148,6 +149,33 @@ describe('control-enabled session spawn (Stage 5 gating)', () => {
     expect(prompt).toContain('- story');
     expect(prompt).toContain("--params '<json>'");
     expect(prompt).toContain('EXPERIMENTAL'); // app-build is flagged
+  });
+
+  it('adds the promote line only when NIGHTSHIFT_PROMOTE_ENABLED is on (Stage 11)', async () => {
+    const mgr = makeManager({ promoteEnabled: true });
+    await mgr.relay(inbound('hello'));
+
+    const [call] = invocations();
+    const seedIdx = call?.args.indexOf('--append-system-prompt') ?? -1;
+    const prompt = call?.args[seedIdx + 1] ?? '';
+    expect(prompt).toContain(CONTROL_PREAMBLE);
+    expect(prompt).toContain(PROMOTE_PREAMBLE);
+    // The confirm discipline is spelled out: dry-run first, explicit confirm.
+    expect(prompt).toContain('nightshift promote');
+    expect(prompt).toContain('dry run');
+    expect(prompt).toContain('explicitly confirms');
+    expect(prompt.indexOf(CONTROL_PREAMBLE)).toBeLessThan(prompt.indexOf(PROMOTE_PREAMBLE));
+  });
+
+  it('omits the promote line while the promotion kill-switch is OFF', async () => {
+    const mgr = makeManager(); // promoteEnabled stays false
+    await mgr.relay(inbound('hello'));
+
+    const [call] = invocations();
+    const seedIdx = call?.args.indexOf('--append-system-prompt') ?? -1;
+    const prompt = call?.args[seedIdx + 1] ?? '';
+    expect(prompt).toContain(CONTROL_PREAMBLE);
+    expect(prompt).not.toContain('nightshift promote');
   });
 
   it('omits the type list while the registry kill-switch is OFF', async () => {

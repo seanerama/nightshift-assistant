@@ -390,12 +390,14 @@ describe('job runner', () => {
       });
     });
 
-    it('a spawned worker sees the allow-list but NEVER the Webex credentials or the API token', async () => {
+    it('a spawned worker sees the allow-list but NEVER the Webex credentials, the API token, or the promotion infra creds', async () => {
       const saved: Record<string, string | undefined> = {
         WEBEX_BOT_TOKEN: process.env.WEBEX_BOT_TOKEN,
         WEBEX_WEBHOOK_SECRET: process.env.WEBEX_WEBHOOK_SECRET,
         WEBEX_OWNER_PERSON_ID: process.env.WEBEX_OWNER_PERSON_ID,
         NIGHTSHIFT_API_TOKEN: process.env.NIGHTSHIFT_API_TOKEN,
+        CF_DNS_TOKEN: process.env.CF_DNS_TOKEN,
+        COOLIFY_API_TOKEN: process.env.COOLIFY_API_TOKEN,
       };
       process.env.WEBEX_BOT_TOKEN = 'live-secret-token';
       process.env.WEBEX_WEBHOOK_SECRET = 'live-secret-hmac';
@@ -403,6 +405,9 @@ describe('job runner', () => {
       // Stage 5 invariant: the control-API token must never reach a worker —
       // a worker must not be able to drive its own daemon (ADR 0007).
       process.env.NIGHTSHIFT_API_TOKEN = 'live-api-token';
+      // Stage 11 invariant (ADR 0008): promotion infra creds are daemon-only.
+      process.env.CF_DNS_TOKEN = 'live-cf-token';
+      process.env.COOLIFY_API_TOKEN = 'live-coolify-token';
       try {
         const runner = makeRunner();
         const record = submit(runner, 'MODE=dump-env');
@@ -417,6 +422,8 @@ describe('job runner', () => {
         expect(dumped.WEBEX_WEBHOOK_SECRET).toBeUndefined();
         expect(dumped.WEBEX_OWNER_PERSON_ID).toBeUndefined();
         expect(dumped.NIGHTSHIFT_API_TOKEN).toBeUndefined();
+        expect(dumped.CF_DNS_TOKEN).toBeUndefined();
+        expect(dumped.COOLIFY_API_TOKEN).toBeUndefined();
         // Nothing outside the allow-list leaks at all.
         const allowed = new Set([
           'PATH',

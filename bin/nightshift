@@ -33,6 +33,13 @@ Usage:
                                    Send a file to the owner's Webex room as an
                                    attachment (allowed roots: ~/projects and the
                                    app's jobs/ + logs/ dirs)
+  nightshift promote <path> [--slug <s>] [--title <t>] [--dry-run|--yes]
+                                   Promote a content dir (~/projects) to a live
+                                   https://<slug> site via GitHub + Coolify +
+                                   Cloudflare. DRY RUN IS THE DEFAULT — the plan
+                                   is printed and nothing executes; pass --yes
+                                   to execute (runs in the background, result
+                                   arrives as a 🚀 notice in Webex)
   nightshift rotate                Rotate the conversational session (manual)
   nightshift status                Daemon status (version, uptime, session, job counts)
 
@@ -153,6 +160,26 @@ function formatJobList(jobsList) {
   return [line(header), ...rows.map(line)].join('\n');
 }
 
+/** Readable PromotionRecord block (steps as one line each). */
+function formatPromotion(p) {
+  const lines = [
+    `slug:      ${p.slug}`,
+    `title:     ${p.title}`,
+    `status:    ${p.status}`,
+    `source:    ${p.sourcePath}`,
+    `url:       ${p.url ?? '—'}`,
+    `repo:      ${p.repoUrl ?? '—'}`,
+  ];
+  if (p.error) lines.push(`error:     ${p.error}`);
+  if (Array.isArray(p.steps) && p.steps.length > 0) {
+    lines.push('steps:');
+    for (const step of p.steps) {
+      lines.push(`  ${step.ok ? 'ok  ' : 'FAIL'} ${step.name}: ${step.detail}`);
+    }
+  }
+  return lines.join('\n');
+}
+
 function formatStatus(s) {
   const j = s.jobs;
   return [
@@ -175,6 +202,7 @@ function parseArgs(argv) {
     '--status',
     '--params',
     '--note',
+    '--slug',
   ]);
   const options = {};
   const positionals = [];
@@ -182,6 +210,8 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--json') json = true;
+    else if (arg === '--dry-run') options.dryRun = true;
+    else if (arg === '--yes') options.yes = true;
     else if (arg === '-h' || arg === '--help') {
       process.stdout.write(`${USAGE}\n`);
       process.exit(0);
@@ -273,6 +303,31 @@ async function runCommand(conn, parsed) {
       return {
         result,
         render: (r) => `Delivered ${r.delivered.path} to room ${r.delivered.roomId}`,
+      };
+    }
+    case 'promote': {
+      // 1:1 face of POST /api/v1/promote (contracts/promotion.md). DRY RUN IS
+      // THE DEFAULT: with neither --dry-run nor --yes, confirm stays false —
+      // the plan is printed and nothing executes.
+      const target = positionals[0];
+      if (target === undefined) fail(`promote requires a path\n\n${USAGE}`);
+      if (options.dryRun === true && options.yes === true) {
+        fail(`--dry-run and --yes are mutually exclusive\n\n${USAGE}`);
+      }
+      // Resolve relative paths against OUR cwd — the daemon only ever sees
+      // (and confines) an absolute path.
+      const path = await import('node:path');
+      const body = { path: path.resolve(target), confirm: options.yes === true };
+      if (options.slug !== undefined) body.slug = options.slug;
+      if (options.title !== undefined) body.title = options.title;
+      const result = await callApi(conn, 'POST', '/api/v1/promote', body);
+      return {
+        result,
+        render: (r) =>
+          formatPromotion(r.promotion) +
+          (body.confirm
+            ? '\n\nExecution started in the background — the result arrives as a 🚀 notice in Webex.'
+            : '\n\nDry run only — NOTHING was executed. Re-run with --yes to execute this plan.'),
       };
     }
     case 'rotate': {

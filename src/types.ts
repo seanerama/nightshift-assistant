@@ -104,3 +104,43 @@ export interface JobSentinel {
   url?: string;
   port?: number;
 }
+
+/** contracts/promotion.md — POST /api/v1/promote request body. */
+export interface PromoteRequest {
+  /** Content dir, confined to $HOME/projects. */
+  path: string;
+  /** Default: slugified basename of the content dir. */
+  slug?: string;
+  /** Human title for the index/README. */
+  title?: string;
+  /** false/absent → DRY RUN (plan only, no side effects). */
+  confirm: boolean;
+}
+
+/** contracts/promotion.md — PromotionRecord.status. */
+export type PromotionStatus = 'planned' | 'running' | 'live' | 'failed' | 'removed';
+
+/** contracts/promotion.md — one recorded pipeline step. */
+export interface PromotionStep {
+  /** validate | scan | repo | coolify | route | dns | health (fixed order). */
+  name: string;
+  ok: boolean;
+  detail: string;
+}
+
+/** contracts/promotion.md — persisted PromotionRecord (the only representation of a promotion). */
+export interface PromotionRecord {
+  schema: 1;
+  id: string;
+  slug: string;
+  title: string;
+  sourcePath: string;
+  status: PromotionStatus;
+  repoUrl: string | null;
+  /** https://<slug>.<NSAF_DOMAIN> */
+  url: string | null;
+  steps: PromotionStep[];
+  createdAt: string;
+  endedAt: string | null;
+  error: string | null;
+}

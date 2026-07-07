@@ -20,6 +20,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Config } from '../config.js';
 import { JobError, type JobRunner } from '../jobs/runner.js';
 import type { Logger } from '../log.js';
+import { type Promoter, PromotionError } from '../promotion/pipeline.js';
 import type { SessionManager } from '../session/manager.js';
 import type { JobStatus, JobSubmit } from '../types.js';
 import { DeliverError, type Deliverer } from './deliver.js';
@@ -35,6 +36,8 @@ export interface ApiDeps {
   sessions: SessionManager;
   /** Stage 10 (additive on control-api v1): POST /api/v1/deliver. */
   deliver: Deliverer;
+  /** Stage 11 (additive on control-api v1): POST /api/v1/promote. */
+  promote: Promoter;
   version: string;
 }
 
@@ -56,7 +59,7 @@ function tokenMatches(header: string | undefined, expected: string): boolean {
 }
 
 export function createApiHandler(deps: ApiDeps): ApiHandler {
-  const { config, log, jobs, sessions, deliver, version } = deps;
+  const { config, log, jobs, sessions, deliver, promote, version } = deps;
   const startedAt = Date.now();
 
   /** Parse a POST body as JSON; an empty body is {} (rotate takes no required fields). */
@@ -181,6 +184,62 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
       return;
     }
 
+    // POST /api/v1/promote — contracts/promotion.md (Stage 11, additive on the
+    // frozen control-api v1 surface). Own kill-switch behind the two control
+    // gates: NIGHTSHIFT_PROMOTE_ENABLED not "true" → 403 (dark by default).
+    // Body { path, slug?, title?, confirm }. confirm false/absent → DRY RUN,
+    // handled synchronously (plan only, zero side effects). confirm:true →
+    // the pipeline runs ASYNC after this response (a real promotion takes
+    // minutes): the response carries the persisted 'running' PromotionRecord
+    // — the record's current truth, which satisfies the contract — and the
+    // completion/failure arrives on its own as a 🚀 notice in Webex.
+    if (method === 'POST' && path === '/api/v1/promote') {
+      if (!config.promoteEnabled) {
+        respond(res, 403, {
+          ok: false,
+          error: 'promotion is disabled (set NIGHTSHIFT_PROMOTE_ENABLED=true to enable)',
+        });
+        return;
+      }
+      let body: unknown;
+      try {
+        body = await readJsonBody(req);
+      } catch {
+        respond(res, 400, { ok: false, error: 'invalid JSON body' });
+        return;
+      }
+      const {
+        path: contentPath,
+        slug,
+        title,
+        confirm,
+      } = body as { path?: unknown; slug?: unknown; title?: unknown; confirm?: unknown };
+      if (typeof contentPath !== 'string' || contentPath === '') {
+        respond(res, 400, { ok: false, error: 'promote requires "path" (non-empty string)' });
+        return;
+      }
+      if (slug !== undefined && typeof slug !== 'string') {
+        respond(res, 400, { ok: false, error: '"slug" must be a string when present' });
+        return;
+      }
+      if (title !== undefined && typeof title !== 'string') {
+        respond(res, 400, { ok: false, error: '"title" must be a string when present' });
+        return;
+      }
+      if (confirm !== undefined && typeof confirm !== 'boolean') {
+        respond(res, 400, { ok: false, error: '"confirm" must be a boolean when present' });
+        return;
+      }
+      const promotion = await promote.promote({
+        path: contentPath,
+        ...(slug === undefined ? {} : { slug }),
+        ...(title === undefined ? {} : { title }),
+        confirm: confirm === true,
+      });
+      respond(res, 200, { ok: true, promotion });
+      return;
+    }
+
     // POST /api/v1/session/rotate — body { reason?: 'manual' }
     if (method === 'POST' && path === '/api/v1/session/rotate') {
       let body: unknown;
@@ -228,6 +287,12 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
       }
       if (err instanceof DeliverError) {
         respond(res, err.status, { ok: false, error: err.message });
+        return;
+      }
+      if (err instanceof PromotionError) {
+        // Rejected promote input: escaping/missing path, unrecognized content,
+        // underivable slug, or an already-running slug.
+        respond(res, 400, { ok: false, error: err.message });
         return;
       }
       if (err instanceof AttachmentError) {

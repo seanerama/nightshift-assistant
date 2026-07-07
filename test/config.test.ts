@@ -51,6 +51,9 @@ describe('loadConfig', () => {
     expect(config.apiToken).toBe('');
     expect(config.attachMaxMb).toBe(80); // Stage 10 delivery knobs
     expect(config.autoAttachMaxMb).toBe(10);
+    expect(config.promoteEnabled).toBe(false); // promotion ships dark (Stage 11)
+    expect(config.promote.cfApiBase).toBe('https://api.cloudflare.com/client/v4');
+    expect(config.promote.healthBase).toBe('');
   });
 
   it('validates the Stage 10 attachment knobs (non-negative integers; 0 disables)', () => {
@@ -176,6 +179,72 @@ describe('loadConfig', () => {
     // Control off: a set token is carried but not required.
     expect(loadConfig({ ...FULL_ENV, NIGHTSHIFT_API_TOKEN: 'tok' }).apiToken).toBe('tok');
     expect(loadConfig({ ...FULL_ENV }).controlEnabled).toBe(false);
+  });
+
+  it('enables promotion only on exactly "true" and fails fast on garbage (Stage 11)', () => {
+    expect(loadConfig({ ...FULL_ENV, NIGHTSHIFT_PROMOTE_ENABLED: 'false' }).promoteEnabled).toBe(
+      false,
+    );
+    expect(() => loadConfig({ ...FULL_ENV, NIGHTSHIFT_PROMOTE_ENABLED: 'TRUE' })).toThrow(
+      ConfigError,
+    );
+    expect(() => loadConfig({ ...FULL_ENV, NIGHTSHIFT_PROMOTE_ENABLED: 'on' })).toThrow(
+      ConfigError,
+    );
+  });
+
+  it('when promotion is enabled, fails fast unless ALL TEN infra env names are set', () => {
+    const promoteEnv: Record<string, string> = {
+      ...FULL_ENV,
+      NIGHTSHIFT_PROMOTE_ENABLED: 'true',
+      COOLIFY_API_URL: 'http://coolify.local:8000',
+      COOLIFY_API_TOKEN: 'ct',
+      COOLIFY_PROJECT_UUID: 'p',
+      COOLIFY_SERVER_UUID: 's',
+      COOLIFY_ENVIRONMENT: 'production',
+      CF_ACCOUNT_ID: 'a',
+      CF_ZONE_ID: 'z',
+      CF_TUNNEL_ID: 't',
+      CF_DNS_TOKEN: 'd',
+      NSAF_DOMAIN: 'seanmahoney.ai',
+    };
+    const config = loadConfig(promoteEnv);
+    expect(config.promoteEnabled).toBe(true);
+    expect(config.promote.coolifyApiUrl).toBe('http://coolify.local:8000');
+    expect(config.promote.domain).toBe('seanmahoney.ai');
+    expect(config.promote.cfApiBase).toBe('https://api.cloudflare.com/client/v4'); // default
+
+    for (const name of [
+      'COOLIFY_API_URL',
+      'COOLIFY_API_TOKEN',
+      'COOLIFY_PROJECT_UUID',
+      'COOLIFY_SERVER_UUID',
+      'COOLIFY_ENVIRONMENT',
+      'CF_ACCOUNT_ID',
+      'CF_ZONE_ID',
+      'CF_TUNNEL_ID',
+      'CF_DNS_TOKEN',
+      'NSAF_DOMAIN',
+    ]) {
+      const env = { ...promoteEnv };
+      delete env[name];
+      expect(() => loadConfig(env), name).toThrow(new RegExp(`missing: .*${name}`));
+      env[name] = '';
+      expect(() => loadConfig(env), `${name} empty`).toThrow(ConfigError);
+    }
+
+    // Promotion off: the ten are NOT required (documented-not-set placeholders).
+    expect(loadConfig({ ...FULL_ENV }).promote.coolifyApiUrl).toBe('');
+  });
+
+  it('honors the promotion test seams (CF_API_BASE, NIGHTSHIFT_PROMOTE_HEALTH_BASE)', () => {
+    const config = loadConfig({
+      ...FULL_ENV,
+      CF_API_BASE: 'http://127.0.0.1:9998/client/v4',
+      NIGHTSHIFT_PROMOTE_HEALTH_BASE: 'http://127.0.0.1:9997',
+    });
+    expect(config.promote.cfApiBase).toBe('http://127.0.0.1:9998/client/v4');
+    expect(config.promote.healthBase).toBe('http://127.0.0.1:9997');
   });
 
   it('honors the seam overrides (WEBEX_API_BASE, NIGHTSHIFT_AGENT_BIN)', () => {

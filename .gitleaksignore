@@ -1,0 +1,5 @@
+# Deliberate FIXTURE secrets in the promotion-scanner's own tests (AWS docs
+# example key + fake token shapes). The lines carry gitleaks:allow annotations
+# on the branch tip; this fingerprint covers the pre-annotation commit that
+# remains in the PR range's history.
+faf4e96639f74897f68ecd308b63be3eaf766cca:test/promotion.test.ts:generic-api-key:458
