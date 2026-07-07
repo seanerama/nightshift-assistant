@@ -164,6 +164,8 @@ describe('job-type registry', () => {
       PERPLEXITY_API_KEY: 'pplx-key',
       WEBEX_BOT_TOKEN: 'bot-secret',
       NIGHTSHIFT_API_TOKEN: 'api-secret',
+      CF_DNS_TOKEN: 'cf-secret',
+      COOLIFY_API_TOKEN: 'coolify-secret',
     };
 
     it('copies the named extras that exist and nothing else', () => {
@@ -176,10 +178,16 @@ describe('job-type registry', () => {
       });
     });
 
-    it('NEVER forwards WEBEX_*/NIGHTSHIFT_* even when a registry entry names them', () => {
-      const env = workerEnvWith(['WEBEX_BOT_TOKEN', 'NIGHTSHIFT_API_TOKEN'], base);
+    it('NEVER forwards WEBEX_*/NIGHTSHIFT_*/CF_*/COOLIFY_* even when a registry entry names them', () => {
+      const env = workerEnvWith(
+        ['WEBEX_BOT_TOKEN', 'NIGHTSHIFT_API_TOKEN', 'CF_DNS_TOKEN', 'COOLIFY_API_TOKEN'],
+        base,
+      );
       expect(env.WEBEX_BOT_TOKEN).toBeUndefined();
       expect(env.NIGHTSHIFT_API_TOKEN).toBeUndefined();
+      // Stage 11 (ADR 0008): the promotion infra prefixes are hard-blocked too.
+      expect(env.CF_DNS_TOKEN).toBeUndefined();
+      expect(env.COOLIFY_API_TOKEN).toBeUndefined();
     });
   });
 

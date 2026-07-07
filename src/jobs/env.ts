@@ -32,8 +32,10 @@ const ALLOWED_VARS: readonly string[] = [
  * entry's extraEnv names (Stage 6 guard): the daemon's own credentials/config
  * (WEBEX_* bot token/HMAC/owner, NIGHTSHIFT_API_TOKEN and friends). A worker
  * must not be able to drive its daemon or impersonate the bot (ADR 0007).
+ * CF_/COOLIFY_ (Stage 11, ADR 0008): the promotion pipeline's infrastructure
+ * credentials are daemon-only — no worker session ever holds them.
  */
-const BLOCKED_PREFIXES: readonly string[] = ['WEBEX_', 'NIGHTSHIFT_'];
+const BLOCKED_PREFIXES: readonly string[] = ['WEBEX_', 'NIGHTSHIFT_', 'CF_', 'COOLIFY_'];
 
 /** Build a worker child env: allow-listed keys copied from `base`, nothing else. */
 export function workerEnv(base: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {

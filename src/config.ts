@@ -4,6 +4,34 @@
  * start unless the kill-switch (NIGHTSHIFT_ENABLED=true) is explicitly flipped.
  */
 
+/**
+ * The infrastructure the promotion pipeline (Stage 11, contracts/promotion.md)
+ * talks to. DAEMON-ONLY by construction: workerEnv() hard-blocks the CF_ and
+ * COOLIFY_ prefixes, so no worker session can ever receive these (ADR 0008).
+ */
+export interface PromoteConfig {
+  /** Coolify base URL (no /api/v1 suffix) — tests point it at a fixture. */
+  coolifyApiUrl: string;
+  coolifyApiToken: string;
+  coolifyProjectUuid: string;
+  coolifyServerUuid: string;
+  /** Coolify environment name (e.g. "production"). */
+  coolifyEnvironment: string;
+  cfAccountId: string;
+  cfZoneId: string;
+  cfTunnelId: string;
+  cfDnsToken: string;
+  /** Public apex domain — promotions go live at https://<slug>.<domain>. */
+  domain: string;
+  /** Cloudflare API base (TEST SEAM; default https://api.cloudflare.com/client/v4). */
+  cfApiBase: string;
+  /**
+   * Health-check base (TEST SEAM): when set, the final health step GETs
+   * <base>/<slug> instead of https://<slug>.<domain>. '' in production.
+   */
+  healthBase: string;
+}
+
 export interface Config {
   /** Webex bot access token (required). */
   webexBotToken: string;
@@ -79,6 +107,15 @@ export interface Config {
    * under this size ride the notice (bounded count). 0 disables auto-attach.
    */
   autoAttachMaxMb: number;
+  /**
+   * Master switch for content promotion (Stage 11). Default OFF — with it
+   * unset, POST /api/v1/promote and `nightshift promote` refuse, and the
+   * session preamble omits the promote line. When it IS enabled, startup
+   * fails fast unless all ten infra env names in `promote` are set.
+   */
+  promoteEnabled: boolean;
+  /** Promotion infra (contracts/promotion.md "Consumes") — daemon-only creds. */
+  promote: PromoteConfig;
 }
 
 export class ConfigError extends Error {}
@@ -237,6 +274,59 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     );
   }
 
+  // Promotion kill-switch (Stage 11): same discipline — only exactly "true"
+  // enables; "false"/unset stay dark; anything else fails fast.
+  const promoteRaw = env.NIGHTSHIFT_PROMOTE_ENABLED;
+  if (
+    promoteRaw !== undefined &&
+    promoteRaw !== '' &&
+    promoteRaw !== 'true' &&
+    promoteRaw !== 'false'
+  ) {
+    throw new ConfigError(
+      `NIGHTSHIFT_PROMOTE_ENABLED must be "true" or "false" (got: ${promoteRaw})`,
+    );
+  }
+  const promoteEnabled = promoteRaw === 'true';
+
+  // The ten infra env names the promotion contract consumes. All REQUIRED
+  // (non-empty) when promotion is enabled — a half-configured pipeline must
+  // refuse to start, not fail at step 4 of a live run.
+  const PROMOTE_ENV_NAMES = [
+    'COOLIFY_API_URL',
+    'COOLIFY_API_TOKEN',
+    'COOLIFY_PROJECT_UUID',
+    'COOLIFY_SERVER_UUID',
+    'COOLIFY_ENVIRONMENT',
+    'CF_ACCOUNT_ID',
+    'CF_ZONE_ID',
+    'CF_TUNNEL_ID',
+    'CF_DNS_TOKEN',
+    'NSAF_DOMAIN',
+  ] as const;
+  if (promoteEnabled) {
+    const absent = PROMOTE_ENV_NAMES.filter((name) => env[name] === undefined || env[name] === '');
+    if (absent.length > 0) {
+      throw new ConfigError(
+        `NIGHTSHIFT_PROMOTE_ENABLED=true requires all promotion env vars; missing: ${absent.join(', ')}`,
+      );
+    }
+  }
+  const promote: PromoteConfig = {
+    coolifyApiUrl: env.COOLIFY_API_URL ?? '',
+    coolifyApiToken: env.COOLIFY_API_TOKEN ?? '',
+    coolifyProjectUuid: env.COOLIFY_PROJECT_UUID ?? '',
+    coolifyServerUuid: env.COOLIFY_SERVER_UUID ?? '',
+    coolifyEnvironment: env.COOLIFY_ENVIRONMENT ?? '',
+    cfAccountId: env.CF_ACCOUNT_ID ?? '',
+    cfZoneId: env.CF_ZONE_ID ?? '',
+    cfTunnelId: env.CF_TUNNEL_ID ?? '',
+    cfDnsToken: env.CF_DNS_TOKEN ?? '',
+    domain: env.NSAF_DOMAIN ?? '',
+    cfApiBase: env.CF_API_BASE ?? 'https://api.cloudflare.com/client/v4',
+    healthBase: env.NIGHTSHIFT_PROMOTE_HEALTH_BASE ?? '',
+  };
+
   return {
     webexBotToken,
     webexWebhookSecret,
@@ -260,5 +350,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     typesEnabled,
     attachMaxMb,
     autoAttachMaxMb,
+    promoteEnabled,
+    promote,
   };
 }
