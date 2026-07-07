@@ -31,6 +31,7 @@ import type Database from 'better-sqlite3';
 import type { Config } from '../config.js';
 import { jobTypesPreamble } from '../jobs/types.js';
 import type { Logger } from '../log.js';
+import { rotationNotice } from '../notices.js';
 import type { AssistantReply, InboundMessage, RotationReason, RotationRecord } from '../types.js';
 import { isPastDailyBoundary } from './boundary.js';
 import {
@@ -370,11 +371,9 @@ export function createSessionManager(
     };
     log.info('session rotated', { ...record, memoryPromoted: promotedPath !== null });
 
-    // Rotation notice — best-effort, never blocks the ritual.
+    // Rotation notice (builder-formatted) — best-effort, never blocks the ritual.
     try {
-      await notify(
-        `Rotated the conversational session (${reason}); summary at ${relative(appDir, summaryPath)}`,
-      );
+      await notify(rotationNotice(reason, relative(appDir, summaryPath)));
     } catch (err) {
       log.error('rotation notice delivery failed', {
         error: err instanceof Error ? err.message : String(err),

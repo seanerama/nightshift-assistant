@@ -12,13 +12,14 @@ import type { Config } from './config.js';
 import { migrate, openDatabase } from './db/migrate.js';
 import { createJobRunner, type JobRunner } from './jobs/runner.js';
 import type { Logger } from './log.js';
+import { selectAutoAttach } from './notices.js';
 import {
   createSessionManager,
   type SessionManager,
   type SessionManagerHooks,
 } from './session/manager.js';
 import { createApiHandler } from './transport/api.js';
-import { createSender } from './transport/send.js';
+import { AttachmentError, createSender } from './transport/send.js';
 import { createTransportServer } from './transport/server.js';
 import { createWebexClient } from './transport/webex.js';
 
@@ -62,12 +63,33 @@ export function createApp(
   migrate(db, MIGRATIONS_DIR, log);
 
   const webex = createWebexClient(config);
-  const sender = createSender(webex, log);
+  const sender = createSender(webex, log, config);
 
-  // The owner's most recent roomId, for proactive notices (rotation). Tracked
-  // in-memory for this stage: a daemon restart forgets it until the next
-  // inbound message, and rotation then skips the notice (logged, not an error).
-  let lastOwnerRoomId: string | null = null;
+  // The owner's most recent roomId, for proactive notices (rotation, job
+  // finishes) and /api/v1/deliver. Persisted in the settings table (migration
+  // 0005) so a daemon restart keeps routing notices; the in-memory copy is the
+  // hot read, refreshed on every authorized inbound message.
+  const OWNER_ROOM_KEY = 'owner_room_id';
+  let lastOwnerRoomId: string | null =
+    (
+      db.prepare('SELECT value FROM settings WHERE key = ?').get(OWNER_ROOM_KEY) as
+        | { value: string }
+        | undefined
+    )?.value ?? null;
+  const persistOwnerRoom = (roomId: string): void => {
+    lastOwnerRoomId = roomId;
+    try {
+      db.prepare(
+        `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+      ).run(OWNER_ROOM_KEY, roomId, new Date().toISOString());
+    } catch (err) {
+      // The in-memory value still routes this life's notices — log, don't fail.
+      log.error('owner room persist failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
 
   const sessions = createSessionManager(db, log, config, {
     ...sessionHooks,
@@ -86,12 +108,30 @@ export function createApp(
     ...(sessionHooks.appDir === undefined ? {} : { appDir: sessionHooks.appDir }),
     ...(sessionHooks.home === undefined ? {} : { home: sessionHooks.home }),
   });
-  jobs.onFinish(async (job, notice): Promise<void> => {
+  jobs.onFinish(async (job, notice, outputs): Promise<void> => {
     if (lastOwnerRoomId === null) {
       log.info('job finish notice skipped: no owner room seen yet', { jobId: job.id });
       return;
     }
-    await sender.send({ roomId: lastOwnerRoomId }, notice);
+    const dest = { roomId: lastOwnerRoomId };
+    // Auto-attach (Stage 10): small success outputs ride the notice. Dark
+    // unless the control surface is enabled (same switch as on-request
+    // delivery); NIGHTSHIFT_AUTOATTACH_MAX_MB=0 disables it independently.
+    const files = config.controlEnabled
+      ? selectAutoAttach(outputs, job.workdir, config.autoAttachMaxMb)
+      : [];
+    try {
+      await sender.send(dest, notice, files);
+    } catch (err) {
+      // An attachment that grew/vanished after selection must never cost the
+      // notice itself — retry without files (send failures still propagate).
+      if (files.length === 0 || !(err instanceof AttachmentError)) throw err;
+      log.warn('auto-attach failed; delivering the notice without attachments', {
+        jobId: job.id,
+        error: err.message,
+      });
+      await sender.send(dest, notice);
+    }
   });
 
   const server = createTransportServer({
@@ -100,9 +140,7 @@ export function createApp(
     webex,
     sender,
     relay: (msg) => sessions.relay(msg),
-    onOwnerRoom: (roomId) => {
-      lastOwnerRoomId = roomId;
-    },
+    onOwnerRoom: persistOwnerRoom,
     version: appVersion(),
     // Control API (Stage 5): mounted on the same loopback server; the handler
     // owns its own kill-switch (403 dark by default) and bearer auth.

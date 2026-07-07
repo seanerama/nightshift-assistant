@@ -40,6 +40,7 @@ import type Database from 'better-sqlite3';
 import type { Config } from '../config.js';
 import { transitionJob } from '../db/transitions.js';
 import type { Logger } from '../log.js';
+import { failureNotice, killedNotice, successNotice } from '../notices.js';
 import type { JobRecord, JobSentinel, JobStatus, JobSubmit } from '../types.js';
 import { workerEnv, workerEnvWith } from './env.js';
 import {
@@ -92,7 +93,16 @@ interface JobRow {
   retry_of: string | null;
 }
 
-export type FinishHandler = (job: JobRecord, notice: string) => void | Promise<void>;
+/**
+ * Terminal-notice handler. `outputs` are the success sentinel's produced file
+ * paths (empty for failure/kill) — Stage 10's auto-attach input; the notice
+ * string itself comes from the builder in src/notices.ts.
+ */
+export type FinishHandler = (
+  job: JobRecord,
+  notice: string,
+  outputs: string[],
+) => void | Promise<void>;
 
 export interface JobListFilter {
   status?: JobStatus;
@@ -192,9 +202,9 @@ export function createJobRunner(
   });
 
   /** Exactly-once is enforced by callers (transition `applied` guards); this only delivers. */
-  const emitFinish = (row: JobRow, notice: string): void => {
+  const emitFinish = (row: JobRow, notice: string, outputs: string[] = []): void => {
     try {
-      const result = finishHandler(toRecord(row), notice);
+      const result = finishHandler(toRecord(row), notice, outputs);
       if (result instanceof Promise) {
         result.catch((err: unknown) => {
           log.error('onFinish handler failed', {
@@ -319,9 +329,16 @@ export function createJobRunner(
       if (!transitionJob(db, log, id, 'succeeded').applied) return;
       const settled = getRow(id);
       if (settled !== null) {
+        const outputs = verdict.sentinel.outputs ?? [];
         emitFinish(
           settled,
-          `Job succeeded: "${row.title}" (${row.type}, ${row.id})\n\n${verdict.sentinel.summary}`,
+          successNotice({
+            title: row.title,
+            type: row.type,
+            summary: verdict.sentinel.summary,
+            outputs,
+          }),
+          outputs,
         );
       }
       startQueuedJobs();
@@ -375,9 +392,13 @@ export function createJobRunner(
     if (!requeued && failed !== null) {
       emitFinish(
         failed,
-        `Job failed: "${row.title}" (${row.type}, ${row.id}) after ${attempts} attempt(s).\n` +
-          `Reason: ${verdict.reason} (${exitInfo}).\n\n` +
-          `Last log lines:\n\`\`\`\n${logTail(row.log_path)}\n\`\`\``,
+        failureNotice({
+          title: row.title,
+          type: row.type,
+          attempts,
+          reason: `${verdict.reason} (${exitInfo})`,
+          logTail: logTail(row.log_path),
+        }),
       );
     }
     startQueuedJobs();
@@ -587,7 +608,7 @@ export function createJobRunner(
       if (transitionJob(db, log, id, 'killed').applied) {
         const killed = getRow(id);
         if (killed !== null) {
-          emitFinish(killed, `Job killed: "${row.title}" (${row.type}, ${row.id})`);
+          emitFinish(killed, killedNotice({ title: row.title, type: row.type }));
         }
         startQueuedJobs();
       }

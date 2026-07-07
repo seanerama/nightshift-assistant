@@ -195,9 +195,7 @@ describe('rotation ritual (session-manager level)', () => {
     expect(all[1]?.pending).toBe(1);
 
     // Notice went out through the notify hook (app wires it to send()).
-    expect(notices).toEqual([
-      'Rotated the conversational session (daily); summary at logs/daily/2026-07-06.md',
-    ]);
+    expect(notices).toEqual(['🌀 Session rotated (daily) — summary at logs/daily/2026-07-06.md']);
 
     // Next relay starts the NEW session, seeded — and the seed is invisible to
     // the reply (it travels via --append-system-prompt).
@@ -538,7 +536,7 @@ describe('rotation notice through the app (owner room tracked from inbound messa
     await waitFor(() => stub.sends.length >= 2);
     const notice = stub.sends[1];
     expect(notice?.roomId).toBe('room-42');
-    expect(String(notice?.markdown)).toContain('Rotated the conversational session (manual)');
+    expect(String(notice?.markdown)).toContain('🌀 Session rotated (manual)');
     expect(String(notice?.markdown)).toContain(basename(record.summaryPath));
   });
 });
