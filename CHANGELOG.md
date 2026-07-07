@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.2
+
+### Other
+- Stage 14: sk- scanner pattern requires unbroken runs — kebab anchors are not keys (#29)
+
 ## 0.6.1
 
 ### Other

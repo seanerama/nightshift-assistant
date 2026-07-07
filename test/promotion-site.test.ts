@@ -554,7 +554,22 @@ describe('site promotion (router + pipeline)', () => {
       expect(bun.invocations()).toEqual([]);
     });
 
-    it('rejects a second confirm while the slug is already running', async () => {
+    it('retry clears the Astro 5 data store (node_modules/.astro) — 2026-07-07 incident', async () => {
+    // Simulate the live failure: a stale content-layer store makes the first
+    // build render nothing for the new slug; only clearing node_modules/.astro
+    // lets the retry succeed. Old code cleared repo/.astro only and failed here.
+    mkdirSync(join(website.repoDir, 'node_modules', '.astro'), { recursive: true });
+    writeFileSync(join(website.repoDir, 'node_modules', '.astro', 'data-store.json'), '{}');
+    writeFileSync(join(tmpDir, 'bun-stale-store'), '');
+    await promote({ confirm: true });
+    await waitForFinal(SLUG);
+    expect(statusOf(SLUG)).toBe('live');
+    expect(existsSync(join(website.repoDir, 'node_modules', '.astro'))).toBe(false);
+    const builds = bun.invocations().filter((l) => l.includes('run build'));
+    expect(builds.length).toBe(2); // first build blind, retry after the clear
+  });
+
+  it('rejects a second confirm while the slug is already running', async () => {
       health.failFirst(2); // slow the first run down a little
       await promote({ confirm: true });
       await expect(promote({ confirm: true })).rejects.toThrow(/already running/);
