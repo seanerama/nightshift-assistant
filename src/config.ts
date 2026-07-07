@@ -4,6 +4,9 @@
  * start unless the kill-switch (NIGHTSHIFT_ENABLED=true) is explicitly flipped.
  */
 
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
+
 /**
  * The infrastructure the promotion pipeline (Stage 11, contracts/promotion.md)
  * talks to. DAEMON-ONLY by construction: workerEnv() hard-blocks the CF_ and
@@ -27,9 +30,19 @@ export interface PromoteConfig {
   cfApiBase: string;
   /**
    * Health-check base (TEST SEAM): when set, the final health step GETs
-   * <base>/<slug> instead of https://<slug>.<domain>. '' in production.
+   * <base>/<slug> (subdomain pipeline) or <base>/study-guides/<slug> (site
+   * pipeline) instead of the real https URL. '' in production.
    */
   healthBase: string;
+  /**
+   * Local clone of the Astro website repo (Stage 13, contracts/
+   * site-promotion.md) — study promotions are staged, built, and pushed here.
+   * Required (existing git clone) when promotion is enabled; fail fast at
+   * startup, never at step 3 of a live run.
+   */
+  websiteRepo: string;
+  /** bun binary for the website build (TEST SEAM; default "bun"). */
+  bunPath: string;
 }
 
 export interface Config {
@@ -333,6 +346,25 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       );
     }
   }
+
+  // Website repo (Stage 13, contracts/site-promotion.md): required when
+  // promotion is enabled, and it must already be a git clone — a missing or
+  // non-git path fails fast at startup, not mid-pipeline.
+  const websiteRepo = env.NIGHTSHIFT_WEBSITE_REPO ?? '';
+  if (promoteEnabled) {
+    if (websiteRepo === '') {
+      throw new ConfigError(
+        'NIGHTSHIFT_PROMOTE_ENABLED=true requires NIGHTSHIFT_WEBSITE_REPO (local clone of the Astro website repo)',
+      );
+    }
+    if (!existsSync(websiteRepo)) {
+      throw new ConfigError(`NIGHTSHIFT_WEBSITE_REPO does not exist: ${websiteRepo}`);
+    }
+    if (!existsSync(join(websiteRepo, '.git'))) {
+      throw new ConfigError(`NIGHTSHIFT_WEBSITE_REPO is not a git clone (no .git): ${websiteRepo}`);
+    }
+  }
+
   const promote: PromoteConfig = {
     coolifyApiUrl: env.COOLIFY_API_URL ?? '',
     coolifyApiToken: env.COOLIFY_API_TOKEN ?? '',
@@ -346,6 +378,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     domain: env.NSAF_DOMAIN ?? '',
     cfApiBase: env.CF_API_BASE ?? 'https://api.cloudflare.com/client/v4',
     healthBase: env.NIGHTSHIFT_PROMOTE_HEALTH_BASE ?? '',
+    websiteRepo,
+    // '' is treated as unset (matching the other optional vars) → default bun.
+    bunPath:
+      env.NIGHTSHIFT_BUN_PATH === undefined || env.NIGHTSHIFT_BUN_PATH === ''
+        ? 'bun'
+        : env.NIGHTSHIFT_BUN_PATH,
   };
 
   return {

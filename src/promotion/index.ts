@@ -1,15 +1,67 @@
 /**
- * index.html generation (contracts/promotion.md validate step): promoted
- * content without an index.html gets one, so https://<slug>.<domain> lands
- * somewhere sensible. Study content links every guides/*.html (label from the
- * guide's own <title> when present) plus the textbook; story content links
- * the final video/PDF. Deterministic string building — no templates, no deps.
+ * Shared promotion pieces: content-shape detection, slug/title derivation, the
+ * $HOME/projects confinement helper, and index.html generation (the subdomain
+ * pipeline's validate step). Both pipelines (contracts/promotion.md subdomain,
+ * contracts/site-promotion.md website) and the router build on these.
+ * Deterministic string building — no templates, no deps.
  */
 
-import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import {
+  existsSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
+import { isAbsolute, join, sep } from 'node:path';
 
 export type ContentKind = 'study' | 'story';
+
+/** Rejected promote input (bad path, unknown content, in-flight slug) → API 400. */
+export class PromotionError extends Error {}
+
+/** Web-slug normalization: [a-z0-9-], bounded, no leading/trailing dashes. */
+export function slugify(text: string): string {
+  return text
+    .toLowerCase()
+    .replaceAll(/[^a-z0-9]+/g, '-')
+    .replaceAll(/(^-+|-+$)/g, '')
+    .slice(0, 60);
+}
+
+/** "subnet-study" → "Subnet Study". */
+export function titleFromSlug(slug: string): string {
+  return slug.replaceAll('-', ' ').replace(/\b[a-z]/g, (c) => c.toUpperCase());
+}
+
+/**
+ * Confine a promote path to <home>/projects (realpath — symlinks cannot
+ * escape) and require a directory. Returns the resolved real path.
+ * Failures throw PromotionError (→ API 400).
+ */
+export function confineToProjects(home: string, reqPath: string): string {
+  if (typeof reqPath !== 'string' || reqPath === '') {
+    throw new PromotionError('promote requires "path" (non-empty string)');
+  }
+  if (!isAbsolute(reqPath)) {
+    throw new PromotionError(`promote path must be absolute: ${reqPath}`);
+  }
+  let sourcePath: string;
+  try {
+    sourcePath = realpathSync(reqPath);
+  } catch {
+    throw new PromotionError(`content dir not found: ${reqPath}`);
+  }
+  if (!statSync(sourcePath).isDirectory()) {
+    throw new PromotionError(`not a directory: ${reqPath}`);
+  }
+  const root = realpathSync(join(home, 'projects'));
+  if (!sourcePath.startsWith(root + sep)) {
+    throw new PromotionError(`content dir must live inside ${root}: ${reqPath}`);
+  }
+  return sourcePath;
+}
 
 export interface IndexResult {
   generated: boolean;

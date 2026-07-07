@@ -5,6 +5,11 @@
  * no LLM, and the infra creds never leave the daemon (workerEnv() blocks the
  * CF_/COOLIFY_ prefixes).
  *
+ * Stage 13: the promote entry point is now the ROUTER (route.ts) — study
+ * content goes to the website pipeline (site.ts, contracts/site-promotion.md)
+ * and story content is rejected, so this subdomain pipeline is reserved for
+ * future APP promotion and is unreachable for study/story content.
+ *
  * Ported from the old NSAF reference (flask-app/bot/commands.py: cmd_promote,
  * _promote_study, _add_cloudflare_tunnel_route) — the Coolify create/deploy
  * payloads, the CF tunnel-ingress config mutation (insert before the
@@ -25,20 +30,30 @@
 
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync, realpathSync, statSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, isAbsolute, join, sep } from 'node:path';
+import { basename, join } from 'node:path';
 import type Database from 'better-sqlite3';
 import type { Config } from '../config.js';
 import type { Logger } from '../log.js';
 import { promotionFailureNotice, promotionLiveNotice } from '../notices.js';
 import type { PromoteRequest, PromotionRecord, PromotionStep } from '../types.js';
-import { type ContentKind, ensureIndexHtml, listGuides, listStoryArtifacts } from './index.js';
+import {
+  type ContentKind,
+  confineToProjects,
+  ensureIndexHtml,
+  listGuides,
+  listStoryArtifacts,
+  PromotionError,
+  slugify,
+  titleFromSlug,
+} from './index.js';
 import { scanForSecrets } from './scan.js';
 import { createPromotionStore, type PromotionStore } from './store.js';
 
-/** Rejected promote input (bad path, unknown content, in-flight slug) → API 400. */
-export class PromotionError extends Error {}
+// Re-exported for the existing importers (api.ts, tests) — the class itself
+// moved to ./index.js so the site pipeline and router share it (Stage 13).
+export { PromotionError };
 
 /** Public repos land under this GitHub account (contracts/promotion.md step 3). */
 export const GITHUB_OWNER = 'seanerama';
@@ -118,19 +133,6 @@ const MAX_LISTED_HITS = 10;
 
 /** A step failed: recorded { name, ok:false, detail } and the run stops. */
 class StepError extends Error {}
-
-function slugify(text: string): string {
-  return text
-    .toLowerCase()
-    .replaceAll(/[^a-z0-9]+/g, '-')
-    .replaceAll(/(^-+|-+$)/g, '')
-    .slice(0, 60);
-}
-
-/** "subnet-study" → "Subnet Study". */
-function titleFromSlug(slug: string): string {
-  return slug.replaceAll('-', ' ').replace(/\b[a-z]/g, (c) => c.toUpperCase());
-}
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -214,25 +216,7 @@ export function createPromoter(deps: PromoterDeps, hooks: PromoterHooks = {}): P
    * shape, compute slug/title/url/repo. Failures throw PromotionError (400).
    */
   const resolve = (req: PromoteRequest): Resolved => {
-    if (typeof req.path !== 'string' || req.path === '') {
-      throw new PromotionError('promote requires "path" (non-empty string)');
-    }
-    if (!isAbsolute(req.path)) {
-      throw new PromotionError(`promote path must be absolute: ${req.path}`);
-    }
-    let sourcePath: string;
-    try {
-      sourcePath = realpathSync(req.path);
-    } catch {
-      throw new PromotionError(`content dir not found: ${req.path}`);
-    }
-    if (!statSync(sourcePath).isDirectory()) {
-      throw new PromotionError(`not a directory: ${req.path}`);
-    }
-    const root = realpathSync(join(home, 'projects'));
-    if (!sourcePath.startsWith(root + sep)) {
-      throw new PromotionError(`content dir must live inside ${root}: ${req.path}`);
-    }
+    const sourcePath = confineToProjects(home, req.path);
 
     const guides = listGuides(sourcePath);
     const hasTextbook = existsSync(join(sourcePath, 'textbook.md'));

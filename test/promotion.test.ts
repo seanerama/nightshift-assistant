@@ -6,6 +6,11 @@
  * with zero side effects, the 7-step happy path, secret-scan abort before
  * git, validation rejections, index.html generation, one-live-per-slug
  * re-promotion, and first-failure-stops semantics are all proven here.
+ *
+ * Stage 13 NOTE: these tests drive createPromoter DIRECTLY. Through the real
+ * promote entry (the router, promotion-site.test.ts) this subdomain pipeline
+ * is UNREACHABLE for the study/story fixtures used here — it is retained
+ * solely for future app promotion, and its behavior must not regress.
  */
 
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';

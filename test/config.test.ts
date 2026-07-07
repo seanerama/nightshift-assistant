@@ -1,5 +1,8 @@
 /** Kill-switch + fail-fast config contract (acceptance conditions). */
 
+import { mkdirSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { ConfigError, loadConfig } from '../src/config.js';
 
@@ -194,6 +197,13 @@ describe('loadConfig', () => {
     );
   });
 
+  /** A dir that passes the website-repo check (exists + has .git). */
+  const makeFakeWebsiteRepo = (): string => {
+    const dir = mkdtempSync(join(tmpdir(), 'nightshift-config-repo-'));
+    mkdirSync(join(dir, '.git'));
+    return dir;
+  };
+
   it('when promotion is enabled, fails fast unless ALL TEN infra env names are set', () => {
     const promoteEnv: Record<string, string> = {
       ...FULL_ENV,
@@ -208,6 +218,7 @@ describe('loadConfig', () => {
       CF_TUNNEL_ID: 't',
       CF_DNS_TOKEN: 'd',
       NSAF_DOMAIN: 'seanmahoney.ai',
+      NIGHTSHIFT_WEBSITE_REPO: makeFakeWebsiteRepo(), // Stage 13: required too
     };
     const config = loadConfig(promoteEnv);
     expect(config.promoteEnabled).toBe(true);
@@ -236,6 +247,32 @@ describe('loadConfig', () => {
 
     // Promotion off: the ten are NOT required (documented-not-set placeholders).
     expect(loadConfig({ ...FULL_ENV }).promote.coolifyApiUrl).toBe('');
+
+    // Stage 13: the website repo is required alongside the ten — unset,
+    // missing, and not-a-git-clone each fail fast at startup.
+    const noRepo = { ...promoteEnv };
+    delete noRepo.NIGHTSHIFT_WEBSITE_REPO;
+    expect(() => loadConfig(noRepo)).toThrow(/NIGHTSHIFT_WEBSITE_REPO/);
+    expect(() => loadConfig({ ...promoteEnv, NIGHTSHIFT_WEBSITE_REPO: '/does/not/exist' })).toThrow(
+      /does not exist/,
+    );
+    const notGit = mkdtempSync(join(tmpdir(), 'nightshift-config-notgit-'));
+    expect(() => loadConfig({ ...promoteEnv, NIGHTSHIFT_WEBSITE_REPO: notGit })).toThrow(
+      /not a git clone/,
+    );
+  });
+
+  it('reads the Stage 13 website vars: repo optional when promote is off, bun defaults to "bun"', () => {
+    // Promote off: the repo path is carried but never validated.
+    const config = loadConfig({ ...FULL_ENV, NIGHTSHIFT_WEBSITE_REPO: '/nowhere/special' });
+    expect(config.promote.websiteRepo).toBe('/nowhere/special');
+    expect(loadConfig({ ...FULL_ENV }).promote.websiteRepo).toBe('');
+    // Bun path: default, '' treated as unset, override honored.
+    expect(loadConfig({ ...FULL_ENV }).promote.bunPath).toBe('bun');
+    expect(loadConfig({ ...FULL_ENV, NIGHTSHIFT_BUN_PATH: '' }).promote.bunPath).toBe('bun');
+    expect(
+      loadConfig({ ...FULL_ENV, NIGHTSHIFT_BUN_PATH: '/opt/bun/bin/bun' }).promote.bunPath,
+    ).toBe('/opt/bun/bin/bun');
   });
 
   it('honors the promotion test seams (CF_API_BASE, NIGHTSHIFT_PROMOTE_HEALTH_BASE)', () => {
