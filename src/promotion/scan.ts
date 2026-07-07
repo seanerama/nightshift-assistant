@@ -36,7 +36,12 @@ const CONTENT_DENY: ReadonlyArray<{ pattern: RegExp; label: string }> = [
   { pattern: /gh[pousr]_[A-Za-z0-9]{36,}/, label: 'GitHub token' },
   { pattern: /github_pat_[A-Za-z0-9_]{22,}/, label: 'GitHub fine-grained token' },
   { pattern: /xox[baprs]-[A-Za-z0-9-]{10,}/, label: 'Slack token' },
-  { pattern: /sk-[A-Za-z0-9_-]{32,}/, label: 'sk- API key' },
+  // Real sk- keys are LONG UNBROKEN alnum runs (optionally after a proj-/ant-
+  // vendor infix). Hyphens must not count toward the run: kebab-case heading
+  // anchors like `sk-comparison-subnet-versus-wildcard` matched the old
+  // `[A-Za-z0-9_-]{32,}` tail and aborted a legitimate study promotion
+  // (2026-07-07 live incident, 8 false positives).
+  { pattern: /sk-(?:proj-|ant-)?[A-Za-z0-9_]{20,}/, label: 'sk- API key' },
   {
     pattern: /(?:api[_-]?key|secret|token|password)["']?\s*[:=]\s*["'][^"'\s]{16,}["']/i,
     label: 'quoted secret assignment',
