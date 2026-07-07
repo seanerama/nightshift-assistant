@@ -26,7 +26,7 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { relative } from 'node:path';
+import { delimiter, join, relative } from 'node:path';
 import type Database from 'better-sqlite3';
 import type { Config } from '../config.js';
 import { jobTypesPreamble } from '../jobs/types.js';
@@ -72,6 +72,7 @@ export const CONTROL_PREAMBLE = [
   '- `nightshift kill <id>` — stop a job.',
   '- `nightshift rotate` — rotate this conversational session (manual).',
   '- `nightshift status` — daemon status (version, uptime, session, job counts).',
+  'Invoke it as bare `nightshift …`, never with a path prefix (no `./bin/nightshift`, no absolute path) — path-prefixed invocations are denied by the permission rule.',
   'Add `--json` to any command for raw JSON. Job completion notices arrive in Webex on their own — do not poll or wait for jobs to finish.',
 ].join('\n');
 
@@ -203,11 +204,24 @@ export function createSessionManager(
         args.push('--append-system-prompt', opts.appendSystemPrompt);
       }
 
+      // Stage 7: the app's committed CLI dir leads the child's PATH so bare
+      // `nightshift` resolves regardless of the daemon's own PATH (under the
+      // systemd user manager it lacks ~/.local/bin — the 2026-07-06 live
+      // failure). No reliance on deploy symlinks; rest of the inherited PATH
+      // is preserved. Control-gated like the token: flag-off spawns stay
+      // byte-identical (no env option at all).
       const child = config.controlEnabled
         ? spawn(config.agentBin, args, {
             stdio: ['pipe', 'pipe', 'pipe'],
             cwd: appDir,
-            env: { ...process.env, NIGHTSHIFT_API_TOKEN: config.apiToken },
+            env: {
+              ...process.env,
+              NIGHTSHIFT_API_TOKEN: config.apiToken,
+              PATH:
+                process.env.PATH === undefined
+                  ? join(appDir, 'bin')
+                  : `${join(appDir, 'bin')}${delimiter}${process.env.PATH}`,
+            },
           })
         : spawn(config.agentBin, args, { stdio: ['pipe', 'pipe', 'pipe'], cwd: appDir });
       let stdout = '';

@@ -25,6 +25,8 @@ process.stdin.on('end', () => {
   if (process.env.AGENT_STUB_LOG) {
     // apiToken: what the CONVERSATIONAL spawn env carried (Stage 5 gating
     // tests) — null when the daemon did not inject NIGHTSHIFT_API_TOKEN.
+    // path: the spawn env's PATH (Stage 7 — CLI-dir-prepended when control
+    // is on; inherited untouched when it's off).
     fs.appendFileSync(
       process.env.AGENT_STUB_LOG,
       `${JSON.stringify({
@@ -32,6 +34,7 @@ process.stdin.on('end', () => {
         input,
         pid: process.pid,
         apiToken: process.env.NIGHTSHIFT_API_TOKEN ?? null,
+        path: process.env.PATH ?? null,
       })}\n`,
     );
   }
