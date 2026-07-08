@@ -48,7 +48,7 @@ describe('loadConfig', () => {
     expect(config.sizeCapTurns).toBe(200);
     expect(config.seedMaxBytes).toBe(16384);
     expect(config.jobsEnabled).toBe(false); // job runner ships dark
-    expect(config.maxJobs).toBe(2);
+    expect(config.maxJobs).toBe(1); // sequential by default — parallel workers exhaust the session limit
     expect(config.jobRetryCap).toBe(2);
     expect(config.jobKillGraceSec).toBe(10);
     expect(config.controlEnabled).toBe(false); // control surface ships dark
@@ -129,11 +129,11 @@ describe('loadConfig', () => {
   it('validates the job-runner numbers (positive integers)', () => {
     const config = loadConfig({
       ...FULL_ENV,
-      NIGHTSHIFT_MAX_JOBS: '1',
+      NIGHTSHIFT_MAX_JOBS: '3',
       NIGHTSHIFT_JOB_RETRY_CAP: '3',
       NIGHTSHIFT_JOB_KILL_GRACE_SEC: '5',
     });
-    expect(config.maxJobs).toBe(1);
+    expect(config.maxJobs).toBe(3);
     expect(config.jobRetryCap).toBe(3);
     expect(config.jobKillGraceSec).toBe(5);
 
