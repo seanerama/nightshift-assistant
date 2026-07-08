@@ -93,7 +93,12 @@ export interface Config {
    * submit() rejects and no reconciler/poller runs.
    */
   jobsEnabled: boolean;
-  /** Max concurrently LIVE worker processes (reconciler-counted, not row counts). */
+  /**
+   * Max concurrently LIVE worker processes (reconciler-counted, not row
+   * counts). Default 1 — jobs run in sequence; parallel workers on the same
+   * subscription exhaust the session limit (2026-07-08: 3 concurrent study
+   * workers, each fanning out research sub-agents, hit it mid-build).
+   */
   maxJobs: number;
   /** Attempts bound: a job failing this many times lands terminal `failed`. */
   jobRetryCap: number;
@@ -242,7 +247,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   }
   const jobsEnabled = jobsRaw === 'true';
 
-  const maxJobs = Number.parseInt(env.NIGHTSHIFT_MAX_JOBS ?? '2', 10);
+  const maxJobs = Number.parseInt(env.NIGHTSHIFT_MAX_JOBS ?? '1', 10);
   if (!Number.isInteger(maxJobs) || maxJobs < 1) {
     throw new ConfigError(
       `NIGHTSHIFT_MAX_JOBS is not a valid positive integer: ${env.NIGHTSHIFT_MAX_JOBS}`,
