@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.7.0
+
+### Fixes
+- preamble teaches denial finality — headless approvals cannot resolve (#35) (#36)
+
+### Chores
+- commit v0.6.3 runtime truth left uncommitted by the previous ship
+- jobs run in sequence by default — NIGHTSHIFT_MAX_JOBS 2 → 1 (#34)
+
+### Other
+- [stage 16] Tech-guide job type: dispatchable /tg pipeline (#37) (#38)
+- Plan: Stage 16 spec — tech-guide job type (guide) for the /tg pipeline (#37)
+
 ## 0.6.3
 
 ### Other

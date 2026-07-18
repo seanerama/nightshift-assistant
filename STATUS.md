@@ -3,15 +3,15 @@
 > Runtime/ops truth (framework-spec §4.6). Generated from `.verity/runtime.json`
 > by the Release/Deploy Operator. Secret LOCATIONS only — never values.
 
-**Live version:** 0.6.3
-**Deployed at:** 2026-07-07T16:59Z
-**Rollback from:** v0.6.2 (git checkout + restart; migrations additive)
+**Live version:** 0.7.0
+**Deployed at:** 2026-07-18T19:35Z
+**Rollback from:** v0.6.3 (git checkout + restart; migrations additive; db backup ~/backups/nightshift/nightshift-20260718-193233.db)
 
 ## Environments
-- **prod:** {"tag":"v0.6.3","host":"dev server (nsaf-dev-server / 3090-tuf, user systemd)","webhook_url":"https://3090-tuf.taile0ffc4.ts.net/webhook","rotation":"enabled (NIGHTSHIFT_ROTATION_ENABLED=true); stage-2 smoke passed 2026-07-06","jobs":"enabled (NIGHTSHIFT_JOBS_ENABLED=true); stage-4 smoke passed 2026-07-06 (succeed + reconcile-adopt + kill + Webex notices)","stages":"1-15 live: spine, rotation, jobs, control API+CLI, type registry, acks, KillMode=process, delivery+formatted notices, content promotion (study/story → seanmahoney.ai), explicit models + dispatch honesty, study promotion → www/study-guides, sk- scanner fix, build-gate Astro 5 data-store cache clear","verified":"2026-07-12: service active on host (up since 18:14 UTC), NIGHTSHIFT_ENABLED=true, backup timer active"}
+- **prod:** {"tag":"v0.7.0","host":"dev server (nsaf-dev-server / 3090-tuf, user systemd)","webhook_url":"https://3090-tuf.taile0ffc4.ts.net/webhook","rotation":"enabled (NIGHTSHIFT_ROTATION_ENABLED=true); stage-2 smoke passed 2026-07-06","jobs":"enabled (NIGHTSHIFT_JOBS_ENABLED=true); stage-4 smoke passed 2026-07-06 (succeed + reconcile-adopt + kill + Webex notices)","stages":"1-16 live: spine, rotation, jobs, control API+CLI, type registry, acks, KillMode=process, delivery+formatted notices, content promotion, explicit models + dispatch honesty, study promotion → www/study-guides, sk- scanner fix, build-gate Astro 5 cache clear, guide job type (/tg pipeline) + permission-reality preamble","verified":"2026-07-18 19:35Z: service ACTIVE post-deploy; PERMISSION REALITY in dist; registry includes guide; stage-16 live smoke job 0025de85 dispatched (spawn shape verified: marker, opus, acceptEdits, scoped tools)"}
 
 ## Secret locations (names + on-disk locations only, never values)
 - WEBEX_BOT_TOKEN, WEBEX_WEBHOOK_SECRET, WEBEX_OWNER_PERSON_ID, NIGHTSHIFT_AGENT_BIN @ ~/apps/nightshift-assistant/.env on the dev server (mode 0600)
 
 ## Coordination notes
-- 483f539 (chore: NIGHTSHIFT_MAX_JOBS 2 → 1, #34) is on main but not yet tagged/deployed
+- stage-16 live smoke (guide job 0025de85) in flight at ship time — completion notice lands in Webex; conversational session picks up the v0.7.0 preamble at the next rotation (daily ~12:15Z or manual nightshift rotate)
