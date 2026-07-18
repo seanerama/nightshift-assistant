@@ -16,6 +16,22 @@
  * refusing, and a bounded health poll (default 20 × 15s, sized for the host's
  * auto-deploy latency) closes the run.
  *
+ * Stage 17 adds the TECHGUIDE path (contracts/site-promotion.md v1.1,
+ * additive): tg output (techguide-config.json + guide/index.html) stages into
+ * the same repo's /guides namespace, ported from the canonical recipe
+ * (deploy-technical-guide.md; reference output: website commit 2ba563e).
+ * Layout detect (index.html alone → public/guides/<slug>.html; with
+ * section-NN*.html → public/guides/<slug>/; anything else → validate error,
+ * never guess), a src/content/guides/<slug>.yaml entry (title, slug,
+ * description, htmlFile, order — re-promote keeps the existing order), the
+ * same dark-mode conversion guard, and the shared scan/build/push steps. The
+ * techguide HEALTH check is born content-asserting: the host serves a 200
+ * fallback page for unknown paths (the soft-404 trap of issue #33) and
+ * 308-redirects .html/index.html to clean URLs, so the check follows
+ * redirects and passes ONLY when the body carries the staged <title> — a
+ * bare 200 never passes. (The study health check keeps its Stage 13 shape;
+ * its own soft-404 fix is issue #33's scope, not this stage's.)
+ *
  * Gating: identical to pipeline.ts — confirm:false → DRY RUN (the 6 planned
  * steps are returned and persisted 'planned'; NOTHING executes: no repo
  * writes, no git, no bun, no HTTP). confirm:true → 'running' returned
@@ -38,7 +54,14 @@ import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { promotionFailureNotice, promotionLiveNotice } from '../notices.js';
 import type { PromoteRequest, PromotionRecord, PromotionStep } from '../types.js';
-import { confineToProjects, PromotionError, slugify, titleFromSlug } from './index.js';
+import {
+  confineToProjects,
+  extractHtmlTitle,
+  isTechguideOutput,
+  PromotionError,
+  slugify,
+  titleFromSlug,
+} from './index.js';
 import type { Promoter, PromoterDeps } from './pipeline.js';
 import { scanForSecrets } from './scan.js';
 import { createPromotionStore, type PromotionStore } from './store.js';
@@ -149,10 +172,11 @@ function yamlQuote(s: string): string {
 }
 
 /**
- * Next `order:` for a new studyGuides YAML entry (highest existing + 1) —
- * the reference's _next_study_guide_order.
+ * Next `order:` for a new YAML entry in a content collection dir (highest
+ * existing + 1) — the reference's _next_study_guide_order, shared by the
+ * studyGuides and guides collections ("next free number", recipe step 4).
  */
-function nextStudyGuideOrder(yamlDir: string): number {
+function nextOrderIn(yamlDir: string): number {
   let highest = 0;
   if (existsSync(yamlDir)) {
     for (const name of readdirSync(yamlDir)) {
@@ -174,6 +198,20 @@ function existingOrder(yamlPath: string): number | null {
   try {
     const m = /^order:\s*(\d+)/m.exec(readFileSync(yamlPath, 'utf8'));
     return m === null ? null : Number.parseInt(m[1] as string, 10);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * `description` from techguide-config.json when present and non-empty
+ * (spec: config description wins; otherwise the caller generates one).
+ */
+function techguideDescription(configPath: string): string | null {
+  try {
+    const parsed = JSON.parse(readFileSync(configPath, 'utf8')) as { description?: unknown };
+    const description = typeof parsed.description === 'string' ? parsed.description.trim() : '';
+    return description === '' ? null : description;
   } catch {
     return null;
   }
@@ -203,24 +241,45 @@ interface ToolResult {
 /** A step failed: recorded { name, ok:false, detail } and the run stops. */
 class StepError extends Error {}
 
-/** Everything the steps need, computed read-only up front. */
-interface Resolved {
+/** Everything the steps need, computed read-only up front (both shapes). */
+interface ResolvedCommon {
   sourcePath: string;
   slug: string;
   title: string;
   url: string;
   /** The website repo's origin remote (the record's repoUrl), or null. */
   repoUrl: string | null;
+  /** Website-repo target paths (repo-relative, for git add + messages). */
+  publicRel: string;
+  yamlRel: string;
+}
+
+interface ResolvedStudy extends ResolvedCommon {
+  kind: 'study';
   /** guides/chapter-NN.html names, sorted. */
   guides: string[];
   /** One (htmlFile, title) per guide, titles from chapters/chapter-NN.md. */
   chapterTitles: Array<{ htmlFile: string; title: string }>;
   hasTextbook: boolean;
-  /** Website-repo target paths (repo-relative, for git add + messages). */
-  publicRel: string;
-  yamlRel: string;
   textbookRel: string;
 }
+
+interface ResolvedTechguide extends ResolvedCommon {
+  kind: 'techguide';
+  /** index.html alone → single page; with section-NN*.html → hub. */
+  layout: 'single' | 'hub';
+  /** section-NN*.html names, sorted ([] for a single page). */
+  sections: string[];
+  /** The guide's own <title> — the health check's content-assertion needle. */
+  htmlTitle: string;
+  description: string;
+  /** The YAML htmlFile value: `<slug>.html` or `<slug>/index.html`. */
+  htmlFile: string;
+  /** Live URL path (`/guides/<slug>` or `/guides/<slug>.html`) — health seam suffix. */
+  urlPath: string;
+}
+
+type Resolved = ResolvedStudy | ResolvedTechguide;
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -277,14 +336,42 @@ export function createSitePromoter(deps: PromoterDeps, hooks: SitePromoterHooks 
   };
 
   /**
-   * READ-ONLY resolution shared by dry run and execute: confinement, the
-   * study shape (guides/chapter-NN.html required; chapters/*.md drive the
-   * titles; textbook.md optional), the website repo sanity re-check, and the
-   * slug/title/url/repoUrl. Failures throw PromotionError (400).
+   * Config fail-fast covers startup; re-check here so a repo that vanished
+   * (or was never configured in a test) rejects cleanly at the entry.
    */
-  const resolve = (req: PromoteRequest): Resolved => {
-    const sourcePath = confineToProjects(home, req.path);
+  const requireWebsiteRepo = (): void => {
+    if (repo() === '' || !existsSync(repo()) || !existsSync(join(repo(), '.git'))) {
+      throw new PromotionError(
+        `website repo is missing or not a git clone: ${repo() === '' ? '(NIGHTSHIFT_WEBSITE_REPO unset)' : repo()}`,
+      );
+    }
+  };
 
+  /**
+   * The record's repoUrl is the WEBSITE repo's remote (contract), read
+   * synchronously so the dry-run plan carries it too.
+   */
+  const readRepoUrl = (): string | null => {
+    try {
+      const repoUrl = execFileSync('git', ['remote', 'get-url', 'origin'], {
+        cwd: repo(),
+        env: toolEnv,
+        timeout: GIT_TIMEOUT_MS,
+        encoding: 'utf8',
+      }).trim();
+      return repoUrl === '' ? null : repoUrl;
+    } catch {
+      return null;
+    }
+  };
+
+  /**
+   * READ-ONLY study resolution: the study shape (guides/chapter-NN.html
+   * required; chapters/*.md drive the titles; textbook.md optional), the
+   * website repo sanity re-check, and the slug/title/url/repoUrl. Failures
+   * throw PromotionError (400).
+   */
+  const resolveStudy = (req: PromoteRequest, sourcePath: string): ResolvedStudy => {
     const guidesDir = join(sourcePath, 'guides');
     const guides = existsSync(guidesDir)
       ? readdirSync(guidesDir)
@@ -305,28 +392,8 @@ export function createSitePromoter(deps: PromoterDeps, hooks: SitePromoterHooks 
       throw new PromotionError(`cannot derive a slug from: ${req.slug ?? basename(sourcePath)}`);
     }
 
-    // Config fail-fast covers startup; re-check here so a repo that vanished
-    // (or was never configured in a test) rejects cleanly at the entry.
-    if (repo() === '' || !existsSync(repo()) || !existsSync(join(repo(), '.git'))) {
-      throw new PromotionError(
-        `website repo is missing or not a git clone: ${repo() === '' ? '(NIGHTSHIFT_WEBSITE_REPO unset)' : repo()}`,
-      );
-    }
-
-    // The record's repoUrl is the WEBSITE repo's remote (contract), read
-    // synchronously so the dry-run plan carries it too.
-    let repoUrl: string | null = null;
-    try {
-      repoUrl = execFileSync('git', ['remote', 'get-url', 'origin'], {
-        cwd: repo(),
-        env: toolEnv,
-        timeout: GIT_TIMEOUT_MS,
-        encoding: 'utf8',
-      }).trim();
-      if (repoUrl === '') repoUrl = null;
-    } catch {
-      repoUrl = null;
-    }
+    requireWebsiteRepo();
+    const repoUrl = readRepoUrl();
 
     const chaptersDir = join(sourcePath, 'chapters');
     const chapterTitles = guides.map((htmlFile) => {
@@ -336,6 +403,7 @@ export function createSitePromoter(deps: PromoterDeps, hooks: SitePromoterHooks 
     });
 
     return {
+      kind: 'study',
       sourcePath,
       slug,
       title: req.title ?? titleFromSlug(slug),
@@ -350,14 +418,95 @@ export function createSitePromoter(deps: PromoterDeps, hooks: SitePromoterHooks 
     };
   };
 
+  /**
+   * READ-ONLY techguide resolution (Stage 17): layout detect from guide/
+   * (index.html alone → single page; index.html + section-NN*.html → hub;
+   * anything else → validate error, never guess), title from the guide's own
+   * <title> (also the health check's content needle — required), description
+   * from techguide-config.json when present, else generated.
+   */
+  const resolveTechguide = (req: PromoteRequest, sourcePath: string): ResolvedTechguide => {
+    const guideDir = join(sourcePath, 'guide');
+    const entries = readdirSync(guideDir).sort();
+    const sections = entries.filter((name) => /^section-\d+.*\.html$/.test(name));
+    const stray = entries.filter((name) => name !== 'index.html' && !sections.includes(name));
+    if (stray.length > 0) {
+      throw new PromotionError(
+        `techguide content at ${sourcePath} has an unrecognized guide/ layout — expected ` +
+          `index.html alone (single page) or index.html + section-NN*.html (hub); ` +
+          `unexpected: ${stray.join(', ')}`,
+      );
+    }
+    const layout = sections.length === 0 ? 'single' : 'hub';
+
+    const slug = slugify(req.slug ?? basename(sourcePath));
+    if (slug === '') {
+      throw new PromotionError(`cannot derive a slug from: ${req.slug ?? basename(sourcePath)}`);
+    }
+
+    requireWebsiteRepo();
+    const repoUrl = readRepoUrl();
+
+    const htmlTitle = extractHtmlTitle(join(guideDir, 'index.html'));
+    if (htmlTitle === null) {
+      throw new PromotionError(
+        `techguide at ${sourcePath} has no <title> in guide/index.html — required (it names ` +
+          `the guide card and anchors the content-asserting health check)`,
+      );
+    }
+    const title = req.title ?? htmlTitle;
+    const description =
+      techguideDescription(join(sourcePath, 'techguide-config.json')) ??
+      (layout === 'hub'
+        ? `Technical guide on ${title}, covering ${sections.length} sections.`
+        : `Technical guide on ${title}.`);
+    const urlPath = layout === 'single' ? `/guides/${slug}.html` : `/guides/${slug}`;
+
+    return {
+      kind: 'techguide',
+      sourcePath,
+      slug,
+      title,
+      url: `https://www.${promote.domain}${urlPath}`,
+      repoUrl,
+      layout,
+      sections,
+      htmlTitle,
+      description,
+      htmlFile: layout === 'single' ? `${slug}.html` : `${slug}/index.html`,
+      urlPath,
+      publicRel:
+        layout === 'single'
+          ? join('public', 'guides', `${slug}.html`)
+          : join('public', 'guides', slug),
+      yamlRel: join('src', 'content', 'guides', `${slug}.yaml`),
+    };
+  };
+
+  /**
+   * READ-ONLY resolution shared by dry run and execute: confinement, then the
+   * shape. Techguide detection FIRST — same precedence as the router (a tg
+   * workdir's residual sws artifacts must never resolve as study).
+   */
+  const resolve = (req: PromoteRequest): Resolved => {
+    const sourcePath = confineToProjects(home, req.path);
+    return isTechguideOutput(sourcePath)
+      ? resolveTechguide(req, sourcePath)
+      : resolveStudy(req, sourcePath);
+  };
+
   const plannedSteps = (r: Resolved): PromotionStep[] => [
     {
       name: 'validate',
       ok: true,
       detail:
-        `planned: promote study content (${r.guides.length} guide(s)` +
-        `${r.hasTextbook ? ' + textbook.md' : ''}) at ${r.sourcePath} as ${r.slug} ` +
-        `into the website repo ${repo()}`,
+        r.kind === 'techguide'
+          ? `planned: promote techguide content (${
+              r.layout === 'single' ? 'single page' : `hub, ${r.sections.length + 1} page(s)`
+            }) at ${r.sourcePath} as ${r.slug} into the website repo ${repo()}`
+          : `planned: promote study content (${r.guides.length} guide(s)` +
+            `${r.hasTextbook ? ' + textbook.md' : ''}) at ${r.sourcePath} as ${r.slug} ` +
+            `into the website repo ${repo()}`,
     },
     {
       name: 'scan',
@@ -368,9 +517,13 @@ export function createSitePromoter(deps: PromoterDeps, hooks: SitePromoterHooks 
       name: 'stage',
       ok: true,
       detail:
-        `planned: refuse a dirty repo, pull --rebase, then write ${r.publicRel}/ ` +
-        `(${r.guides.length} guide(s), dark-mode converted) + ${r.yamlRel}` +
-        `${r.hasTextbook ? ` + ${r.textbookRel}` : ''}`,
+        r.kind === 'techguide'
+          ? `planned: refuse a dirty repo, pull --rebase, then write ` +
+            `${r.publicRel}${r.layout === 'hub' ? '/' : ''} ` +
+            `(dark-mode converted when light) + ${r.yamlRel}`
+          : `planned: refuse a dirty repo, pull --rebase, then write ${r.publicRel}/ ` +
+            `(${r.guides.length} guide(s), dark-mode converted) + ${r.yamlRel}` +
+            `${r.hasTextbook ? ` + ${r.textbookRel}` : ''}`,
     },
     {
       name: 'build',
@@ -385,15 +538,24 @@ export function createSitePromoter(deps: PromoterDeps, hooks: SitePromoterHooks 
     {
       name: 'health',
       ok: true,
-      detail: `planned: GET ${r.url} until 200 (bounded ${healthRetries} × ${Math.round(healthIntervalMs / 1000)}s)`,
+      detail:
+        r.kind === 'techguide'
+          ? `planned: GET ${r.url} following redirects until the body carries the staged ` +
+            `<title> — a bare 200 never passes (bounded ${healthRetries} × ` +
+            `${Math.round(healthIntervalMs / 1000)}s)`
+          : `planned: GET ${r.url} until 200 (bounded ${healthRetries} × ${Math.round(healthIntervalMs / 1000)}s)`,
     },
   ];
 
   // ── the six executed steps ────────────────────────────────────────────────
 
   const stepValidate = (r: Resolved): string =>
-    `study content: ${r.guides.length} guide(s)${r.hasTextbook ? ' + textbook.md' : ''}; ` +
-    `website repo ${repo()} is a git clone`;
+    r.kind === 'techguide'
+      ? `techguide content: ${
+          r.layout === 'single' ? 'single page' : `hub with ${r.sections.length} section(s)`
+        }; website repo ${repo()} is a git clone`
+      : `study content: ${r.guides.length} guide(s)${r.hasTextbook ? ' + textbook.md' : ''}; ` +
+        `website repo ${repo()} is a git clone`;
 
   const stepScan = (r: Resolved): string => {
     const hits = scanForSecrets(r.sourcePath);
@@ -417,9 +579,12 @@ export function createSitePromoter(deps: PromoterDeps, hooks: SitePromoterHooks 
     return result.code === 0 && branch !== '' ? branch : 'main';
   };
 
-  const stepStage = async (r: Resolved): Promise<string> => {
-    // Shared-repo safety FIRST, before any write: refuse a dirty tree (the
-    // clear error names the files), then sync with the remote.
+  /**
+   * Shared-repo safety FIRST, before any write: refuse a dirty tree (the
+   * clear error names the files), then sync with the remote. Both stage
+   * paths run this before touching the repo.
+   */
+  const refuseDirtyThenRebase = async (): Promise<void> => {
     const status = await mustRun('git', ['status', '--porcelain'], repo());
     const dirty = status.stdout
       .trim()
@@ -433,6 +598,10 @@ export function createSitePromoter(deps: PromoterDeps, hooks: SitePromoterHooks 
     }
     const branch = await currentBranch();
     await mustRun('git', ['pull', '--rebase', 'origin', branch], repo());
+  };
+
+  const stepStageStudy = async (r: ResolvedStudy): Promise<string> => {
+    await refuseDirtyThenRebase();
 
     // Copy guides with the dark-mode conversion. Re-promote overwrites the
     // same slug's dir wholesale (idempotent; removed chapters do not linger).
@@ -452,7 +621,7 @@ export function createSitePromoter(deps: PromoterDeps, hooks: SitePromoterHooks 
     // order; a new slug gets highest+1 (the reference's numbering).
     const yamlPath = join(repo(), r.yamlRel);
     const order =
-      existingOrder(yamlPath) ?? nextStudyGuideOrder(join(repo(), 'src', 'content', 'studyGuides'));
+      existingOrder(yamlPath) ?? nextOrderIn(join(repo(), 'src', 'content', 'studyGuides'));
     const textbookSrc = join(r.sourcePath, 'textbook.md');
     let description = r.hasTextbook ? extractTextbookIntro(textbookSrc) : '';
     if (description === '') {
@@ -492,6 +661,62 @@ export function createSitePromoter(deps: PromoterDeps, hooks: SitePromoterHooks 
     );
   };
 
+  const stepStageTechguide = async (r: ResolvedTechguide): Promise<string> => {
+    await refuseDirtyThenRebase();
+
+    // Idempotent overwrite for the slug in EITHER layout: clear both possible
+    // targets so a layout change between promotes never leaves stale files
+    // (the tree was verified clean, so only prior promotes are removed).
+    rmSync(join(repo(), 'public', 'guides', `${r.slug}.html`), { force: true });
+    rmSync(join(repo(), 'public', 'guides', r.slug), { recursive: true, force: true });
+
+    // Copy pages with the dark-mode guard: convert ONLY when the standard
+    // light palette is present — tg output is dark-native and "don't fight a
+    // design it already has" (recipe step 3).
+    let swapped = 0;
+    const copyConverted = (srcName: string, dstPath: string): void => {
+      const converted = convertGuideToDarkMode(
+        readFileSync(join(r.sourcePath, 'guide', srcName), 'utf8'),
+      );
+      if (converted.swapped) swapped += 1;
+      writeFileSync(dstPath, converted.html);
+    };
+    if (r.layout === 'single') {
+      mkdirSync(join(repo(), 'public', 'guides'), { recursive: true });
+      copyConverted('index.html', join(repo(), r.publicRel));
+    } else {
+      const hubDir = join(repo(), r.publicRel);
+      mkdirSync(hubDir, { recursive: true });
+      for (const name of ['index.html', ...r.sections]) {
+        copyConverted(name, join(hubDir, name));
+      }
+    }
+
+    // The guides content entry (reference: commit 2ba563e — field order
+    // title, slug, description, htmlFile, order; all required). A re-promote
+    // keeps the slug's existing order; a new slug gets the next free number.
+    const yamlPath = join(repo(), r.yamlRel);
+    const order = existingOrder(yamlPath) ?? nextOrderIn(join(repo(), 'src', 'content', 'guides'));
+    const yamlLines = [
+      `title: ${yamlQuote(r.title)}`,
+      `slug: "${r.slug}"`,
+      `description: ${yamlQuote(r.description)}`,
+      `htmlFile: "${r.htmlFile}"`,
+      `order: ${order}`,
+    ];
+    mkdirSync(join(repo(), 'src', 'content', 'guides'), { recursive: true });
+    writeFileSync(yamlPath, `${yamlLines.join('\n')}\n`);
+
+    const pages = r.layout === 'single' ? 1 : r.sections.length + 1;
+    return (
+      `copied ${pages} page(s) (dark-mode swapped: ${swapped}) → ` +
+      `${r.publicRel}${r.layout === 'hub' ? '/' : ''}; wrote ${r.yamlRel} (order ${order})`
+    );
+  };
+
+  const stepStage = (r: Resolved): Promise<string> =>
+    r.kind === 'techguide' ? stepStageTechguide(r) : stepStageStudy(r);
+
   const stepBuild = async (r: Resolved): Promise<string> => {
     // The tree was verified clean before staging, so a rollback only ever
     // discards THIS run's writes — never an operator's manual edits.
@@ -517,13 +742,23 @@ export function createSitePromoter(deps: PromoterDeps, hooks: SitePromoterHooks 
       }
     }
 
-    const distIndex = join(repo(), 'dist', 'study-guides', r.slug, 'index.html');
+    // The build-gate artifact: the slug's rendered page under dist/ (study —
+    // the YAML-driven page; techguide — the public/ HTML copied verbatim).
+    const distRel =
+      r.kind === 'techguide'
+        ? r.layout === 'single'
+          ? join('dist', 'guides', `${r.slug}.html`)
+          : join('dist', 'guides', r.slug, 'index.html')
+        : join('dist', 'study-guides', r.slug, 'index.html');
+    const rendered =
+      r.kind === 'techguide' && r.layout === 'single' ? `${r.slug}.html` : `${r.slug}/index.html`;
+    const distIndex = join(repo(), distRel);
     let result = await runTool(promote.bunPath, ['run', 'build'], repo(), buildTimeoutMs);
     if (result.code !== 0) {
       await failBuild(`\`${promote.bunPath} run build\` failed`, result);
     }
     if (existsSync(distIndex)) {
-      return `\`${promote.bunPath} run build\` passed — ${r.slug}/index.html rendered`;
+      return `\`${promote.bunPath} run build\` passed — ${rendered} rendered`;
     }
     // Astro's content cache can go stale when a new collection entry lands —
     // clear the caches and rebuild once (the reference's retry). Astro 5 moved
@@ -535,26 +770,30 @@ export function createSitePromoter(deps: PromoterDeps, hooks: SitePromoterHooks 
     rmSync(join(repo(), 'dist'), { recursive: true, force: true });
     result = await runTool(promote.bunPath, ['run', 'build'], repo(), buildTimeoutMs);
     if (result.code !== 0 || !existsSync(distIndex)) {
-      await failBuild(
-        `build produced no dist/study-guides/${r.slug}/index.html even after clearing .astro/dist`,
-        result,
-      );
+      await failBuild(`build produced no ${distRel} even after clearing .astro/dist`, result);
     }
-    return `\`${promote.bunPath} run build\` passed (after stale-cache clear) — ${r.slug}/index.html rendered`;
+    return `\`${promote.bunPath} run build\` passed (after stale-cache clear) — ${rendered} rendered`;
   };
 
   const stepPush = async (r: Resolved): Promise<string> => {
     const branch = await currentBranch();
-    const addPaths = [r.publicRel, r.yamlRel, ...(r.hasTextbook ? [r.textbookRel] : [])];
+    // Techguide adds the whole public/guides dir (a clean-tree guarantee makes
+    // that exact: only this run's writes exist, and a layout-change re-promote
+    // stages its removals too); study adds the slug's own paths.
+    const addPaths =
+      r.kind === 'techguide'
+        ? [join('public', 'guides'), r.yamlRel]
+        : [r.publicRel, r.yamlRel, ...(r.hasTextbook ? [r.textbookRel] : [])];
     await mustRun('git', ['add', ...addPaths], repo());
+    // Commit subject matches the reference recipes (2ba563e for techguide).
+    const subject =
+      r.kind === 'techguide'
+        ? `Add ${r.title} technical guide`
+        : `Add ${r.title} study guide (${r.guides.length} chapters)`;
     // --allow-empty keeps an unchanged re-promote flowing (and an empty
     // commit retriggers the host's auto-deploy, which the reference relies on
     // for its flaky-prerender workaround).
-    await mustRun(
-      'git',
-      ['commit', '-m', `Add ${r.title} study guide (${r.guides.length} chapters)`, '--allow-empty'],
-      repo(),
-    );
+    await mustRun('git', ['commit', '-m', subject, '--allow-empty'], repo());
     // Contract: pull --rebase first — the repo is shared and may have drifted
     // while the build ran; our commit rebases cleanly on top.
     await mustRun('git', ['pull', '--rebase', 'origin', branch], repo());
@@ -562,7 +801,44 @@ export function createSitePromoter(deps: PromoterDeps, hooks: SitePromoterHooks 
     return `committed and pushed to origin/${branch} — hosting auto-deploys`;
   };
 
+  /**
+   * Techguide health: CONTENT-asserting, never a bare status check. The host
+   * serves a 200 fallback page for unknown paths (the soft-404 that fooled
+   * the 2026-07-18 manual verification — issue #33's trap) and 308-redirects
+   * .html/index.html to clean URLs, so: follow redirects, and pass ONLY when
+   * the fetched body carries the staged guide's <title>.
+   */
+  const stepHealthTechguide = async (r: ResolvedTechguide): Promise<string> => {
+    const target = promote.healthBase === '' ? r.url : `${promote.healthBase}${r.urlPath}`;
+    for (let attempt = 1; attempt <= healthRetries; attempt += 1) {
+      try {
+        const res = await fetch(target, {
+          redirect: 'follow',
+          signal: AbortSignal.timeout(fetchTimeoutMs),
+        });
+        if (res.status === 200) {
+          const body = await res.text();
+          if (body.includes(r.htmlTitle)) {
+            return `200 from ${target} carrying the staged <title> "${r.htmlTitle}" (attempt ${attempt}/${healthRetries})`;
+          }
+          // A 200 WITHOUT the staged title is the host's soft-404 fallback
+          // (or a not-yet-propagated deploy) — not healthy; keep retrying.
+        }
+      } catch {
+        // Not deployed yet — retry until the bound.
+      }
+      if (attempt < healthRetries) await sleep(healthIntervalMs);
+    }
+    throw new StepError(
+      `no 200 carrying the staged <title> "${r.htmlTitle}" from ${target} after ` +
+        `${healthRetries} attempts — a bare 200 is the host's soft-404 fallback and never passes`,
+    );
+  };
+
+  // Study health stays a status check (its own soft-404 fix is issue #33's
+  // scope, NOT this stage's — the techguide check above is born asserting).
   const stepHealth = async (r: Resolved): Promise<string> => {
+    if (r.kind === 'techguide') return stepHealthTechguide(r);
     const target =
       promote.healthBase === '' ? r.url : `${promote.healthBase}/study-guides/${r.slug}`;
     for (let attempt = 1; attempt <= healthRetries; attempt += 1) {

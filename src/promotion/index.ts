@@ -77,7 +77,7 @@ function escapeHtml(text: string): string {
 }
 
 /** First <title> from an HTML file, or null. Reads the head of the file only. */
-function extractHtmlTitle(path: string): string | null {
+export function extractHtmlTitle(path: string): string | null {
   try {
     const head = readFileSync(path, 'utf8').slice(0, 4096);
     const match = /<title[^>]*>([^<]+)<\/title>/i.exec(head);
@@ -101,6 +101,18 @@ export function listGuides(dir: string): string[] {
   return readdirSync(guidesDir)
     .filter((name) => name.endsWith('.html'))
     .sort();
+}
+
+/**
+ * Techguide output (Stage 17): the authoritative marker `techguide-config.json`
+ * at the content root AND the guide entry page. Checked BEFORE study detection
+ * everywhere — tg is an sws fork and residual sws artifacts (chapters/,
+ * guides/) in a tg workdir must never misroute a techguide to the study path.
+ */
+export function isTechguideOutput(dir: string): boolean {
+  return (
+    existsSync(join(dir, 'techguide-config.json')) && existsSync(join(dir, 'guide', 'index.html'))
+  );
 }
 
 /** Story artifacts at the content root: the final video and any PDFs. */
