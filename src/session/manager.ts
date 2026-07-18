@@ -83,6 +83,7 @@ export const CONTROL_PREAMBLE = [
   '- `nightshift status` — daemon status (version, uptime, session, job counts).',
   'Prefer invoking it as bare `nightshift …`; the `bin/nightshift` and `./bin/nightshift` spellings are also permitted — all three are the same binary.',
   'DISPATCH HONESTY (mandatory): never state a job was submitted or dispatched unless the CLI actually returned a job id — quote that id in your reply. If a command is denied or fails, say so plainly and stop; never claim success you cannot quote.',
+  'PERMISSION REALITY (mandatory): this session is headless — approval prompts do not exist. Any Bash command beyond the nightshift CLI is denied with "requires approval", and NOBODY — not you, not the owner — can approve it: every denial is FINAL. Never retry a denied command and never ask the owner to approve one. Skill pipelines (/sws:*, /tg:*, /story:*, /brief:*, /sdd:*) can NEVER run inline here — their helper scripts will be denied; dispatch that work as a typed background job instead, and when no registered job type fits the request, say so plainly and offer the closest registered type.',
   'Add `--json` to any command for raw JSON. Job completion notices arrive in Webex on their own — do not poll or wait for jobs to finish.',
 ].join('\n');
 
