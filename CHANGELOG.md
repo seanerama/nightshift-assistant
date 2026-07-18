@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.0
+
+### Other
+- [stage 17] Techguide promotion: nightshift promote ships guide-shaped output to /guides (#39) (#40)
+- Plan: Stage 17 spec — techguide promotion route + site-promotion contract v1.1 (#39)
+- ship: v0.7.0 smoke verified — guide pipeline green on live (job 0025de85)
+- ship: v0.7.0 — changelog + runtime truth (deployed 2026-07-18T19:35Z)
+
 ## 0.7.0
 
 ### Fixes
