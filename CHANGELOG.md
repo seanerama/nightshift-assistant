@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.3
+
+### Other
+- [stage 15] Build-gate cache clear must include the Astro 5 data store (#32)
+
 ## 0.6.2
 
 ### Other
