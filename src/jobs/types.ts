@@ -109,6 +109,22 @@ function optionalString(type: string, params: JobParams, key: string): string | 
   return requireString(type, params, key);
 }
 
+/** The tg skill's closed variant set (default `deep` is the SKILL's, never injected here). */
+const GUIDE_VARIANTS = ['deep', 'comparison', 'explainer'] as const;
+type GuideVariant = (typeof GUIDE_VARIANTS)[number];
+
+/** Optional guide variant — when present it MUST be in the closed set. */
+function optionalGuideVariant(params: JobParams): GuideVariant | undefined {
+  const variant = optionalString('guide', params, 'variant');
+  if (variant === undefined) return undefined;
+  if (!(GUIDE_VARIANTS as readonly string[]).includes(variant)) {
+    throw new JobTypeError(
+      `invalid params for type 'guide': "variant" must be one of ${GUIDE_VARIANTS.map((v) => `'${v}'`).join(' | ')}`,
+    );
+  }
+  return variant as GuideVariant;
+}
+
 /**
  * The scoped write-capable profile shared by the content pipelines
  * (story/study/brief): acceptEdits auto-accepts file edits INSIDE the workdir
@@ -253,6 +269,40 @@ const registry: readonly JobTypeEntry[] = [
       join(home, 'projects', slugify(`brief-${requireString('brief', params, 'profile')}`)),
     titleTemplate: (params) => `Brief: ${truncate(requireString('brief', params, 'profile'))}`,
     permissionArgs: PIPELINE_PERMISSION_ARGS,
+    extraEnv: ['PERPLEXITY_API_KEY'],
+    model: WORKER_MODEL_HEAVY,
+  },
+  {
+    // Stage 16 (issue #35): the /tg Techguide fork of StudyWS — single
+    // output/<slug>/guide/ artifact, closed variant set, no quizzes/slides.
+    type: 'guide',
+    experimental: false,
+    usage:
+      'guide — interactive tech guide via the /tg:* Techguide pipeline; params {"topic": "...", "variant"?: "deep" | "comparison" | "explainer"}',
+    validateParams(params) {
+      requireString('guide', params, 'topic');
+      optionalGuideVariant(params);
+    },
+    instructionTemplate(params) {
+      const topic = requireString('guide', params, 'topic');
+      const variant = optionalGuideVariant(params);
+      return (
+        `/tg:start ${topic}` +
+        (variant === undefined ? '' : `\n\nUse the techguide variant: "${variant}".`) +
+        '\n\nRun the Techguide pipeline to completion (scope → research → write → ' +
+        `diagrams → build) for this topic. ${AUTONOMY_NOTE}`
+      );
+    },
+    workdirStrategy: (params, home) =>
+      join(home, 'projects', slugify(requireString('guide', params, 'topic'))),
+    titleTemplate(params) {
+      const title = `Guide: ${truncate(requireString('guide', params, 'topic'))}`;
+      const variant = optionalGuideVariant(params);
+      // Only the non-default variants are title-worthy; deep/omitted stay bare.
+      return variant === 'comparison' || variant === 'explainer' ? `${title} (${variant})` : title;
+    },
+    permissionArgs: PIPELINE_PERMISSION_ARGS,
+    // tg research is the sws fork — it fans out through Perplexity too.
     extraEnv: ['PERPLEXITY_API_KEY'],
     model: WORKER_MODEL_HEAVY,
   },
