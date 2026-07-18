@@ -287,6 +287,22 @@ describe('control-enabled session spawn (Stage 5 gating)', () => {
     expect(CONTROL_PREAMBLE).toContain('say so plainly and stop');
   });
 
+  it('preamble carries the permission-reality rule (issue #35)', () => {
+    expect(CONTROL_PREAMBLE).toContain('PERMISSION REALITY');
+    // Denials in the headless session are terminal — no prompt exists, nobody
+    // can approve, so the model must never park work on an approval that
+    // cannot happen (the 2026-07-18 live failure).
+    expect(CONTROL_PREAMBLE).toContain('approval prompts do not exist');
+    expect(CONTROL_PREAMBLE).toContain('FINAL');
+    expect(CONTROL_PREAMBLE).toContain('Never retry a denied command');
+    expect(CONTROL_PREAMBLE).toContain('never ask the owner to approve');
+    // Skill pipelines are job-only: inline helper scripts get denied.
+    expect(CONTROL_PREAMBLE).toContain('NEVER run inline');
+    expect(CONTROL_PREAMBLE).toContain('typed background job');
+    // No dispatch target → say so and offer the closest registered type.
+    expect(CONTROL_PREAMBLE).toContain('closest registered type');
+  });
+
   it('flag-off spawn PATH is the inherited PATH untouched (byte-identical env)', async () => {
     const mgr = makeManager({ controlEnabled: false, apiToken: '' });
     await mgr.relay(inbound('hello'));
