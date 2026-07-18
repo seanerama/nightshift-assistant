@@ -10,13 +10,13 @@
       "rotation": "enabled (NIGHTSHIFT_ROTATION_ENABLED=true); stage-2 smoke passed 2026-07-06",
       "jobs": "enabled (NIGHTSHIFT_JOBS_ENABLED=true); stage-4 smoke passed 2026-07-06 (succeed + reconcile-adopt + kill + Webex notices)",
       "stages": "1-16 live: spine, rotation, jobs, control API+CLI, type registry, acks, KillMode=process, delivery+formatted notices, content promotion, explicit models + dispatch honesty, study promotion → www/study-guides, sk- scanner fix, build-gate Astro 5 cache clear, guide job type (/tg pipeline) + permission-reality preamble",
-      "verified": "2026-07-18 19:35Z: service ACTIVE post-deploy; PERMISSION REALITY in dist; registry includes guide; stage-16 live smoke job 0025de85 dispatched (spawn shape verified: marker, opus, acceptEdits, scoped tools)"
+      "verified": "2026-07-18 20:15Z: v0.7.0 UI-smoke PASSED — guide job 0025de85 succeeded, 0 permission denials, output/git-bisect-basics/guide/index.html rendered (explainer, 5 sections + SVGs, no quizzes); spawn shape verified (marker/opus/acceptEdits/scoped tools); session rotated to edfb4a37 (new preamble arms on first turn)"
     }
   },
   "secret_locations": [
     "WEBEX_BOT_TOKEN, WEBEX_WEBHOOK_SECRET, WEBEX_OWNER_PERSON_ID, NIGHTSHIFT_AGENT_BIN @ ~/apps/nightshift-assistant/.env on the dev server (mode 0600)"
   ],
   "notes": [
-    "stage-16 live smoke (guide job 0025de85) in flight at ship time — completion notice lands in Webex; conversational session picks up the v0.7.0 preamble at the next rotation (daily ~12:15Z or manual nightshift rotate)"
+    "observed in smoke 0025de85: Perplexity MCP is permission-blocked for pipeline workers (allowedTools has no mcp__* rule); tg/sws research falls back to WebSearch/official docs — works, but candidate intake item if research depth matters"
   ]
 }
