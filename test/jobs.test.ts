@@ -578,6 +578,31 @@ describe('job runner', () => {
         }
       }));
 
+    it('a typed guide worker spawns with the pipeline profile + heavy model and writes its marker (Stage 16)', async () => {
+      const runner = makeRunner({ typesEnabled: true });
+      const record = runner.submitType('guide', { topic: 'MODE=dump-args ebpf' });
+
+      expect(record.type).toBe('guide');
+      expect(record.title).toBe('Guide: MODE=dump-args ebpf');
+      expect(record.workdir).toBe(join(tmpDir, 'projects', 'mode-dump-args-ebpf'));
+      expect(readFileSync(join(tmpDir, 'jobs', record.id, 'job-type.txt'), 'utf8').trim()).toBe(
+        'guide',
+      );
+      await waitFor(() => runner.get(record.id)?.status === 'succeeded');
+
+      const args = JSON.parse(
+        readFileSync(join(record.workdir, 'worker-args.json'), 'utf8'),
+      ) as string[];
+      expect(args[0]).toBe('-p');
+      expect(args[1]).toContain('/tg:start MODE=dump-args ebpf');
+      expect(args[args.indexOf('--model') + 1]).toBe('claude-opus-4-8'); // Stage 12 heavy tier
+      expect(args[args.indexOf('--permission-mode') + 1]).toBe('acceptEdits');
+      const allowed = args[args.indexOf('--allowedTools') + 1] ?? '';
+      expect(allowed).toContain('Bash(node *)');
+      expect(allowed).toContain('Bash(curl *)');
+      expect(allowed.split(' ')).not.toContain('Bash'); // never wholesale
+    });
+
     it('a RAW submit keeps the Stage 5 shape + the generic model even with the registry ENABLED', () =>
       withEnv({ ELEVENLABS_API_KEY: 'tts-key', PERPLEXITY_API_KEY: 'pplx-key' }, async () => {
         const runner = makeRunner({ typesEnabled: true });
@@ -626,7 +651,7 @@ describe('job runner', () => {
     it('unknown type rejects listing the known types; bad params reject per type', () => {
       const runner = makeRunner({ typesEnabled: true });
       expect(() => runner.submitType('research', {})).toThrow(
-        /unknown job type: research \(known types: generic, story, study, brief, app-build\)/,
+        /unknown job type: research \(known types: generic, story, study, brief, guide, app-build\)/,
       );
       expect(() => runner.submitType('story', {})).toThrow(/"idea" must be a non-empty string/);
       expect(() => runner.submitType('story', 'nope')).toThrow(/JSON object/);

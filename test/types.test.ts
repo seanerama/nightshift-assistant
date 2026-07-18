@@ -21,13 +21,13 @@ import {
 const HOME = '/home/tester';
 
 describe('job-type registry', () => {
-  it('registers exactly the Stage 6 catalog', () => {
-    expect(knownJobTypes()).toEqual(['generic', 'story', 'study', 'brief', 'app-build']);
+  it('registers exactly the Stage 6 catalog (+ guide, Stage 16)', () => {
+    expect(knownJobTypes()).toEqual(['generic', 'story', 'study', 'brief', 'guide', 'app-build']);
   });
 
   it('assigns the Stage 12 per-type worker models (deliberate, never host-inherited)', () => {
     expect(getJobType('generic')?.model).toBe('claude-sonnet-5');
-    for (const t of ['story', 'study', 'brief', 'app-build']) {
+    for (const t of ['story', 'study', 'brief', 'guide', 'app-build']) {
       expect(getJobType(t)?.model, `${t} runs on Opus`).toBe('claude-opus-4-8');
     }
   });
@@ -74,6 +74,42 @@ describe('job-type registry', () => {
       expect(r.workdir).toBe(join(HOME, 'projects', 'brief-network-engineer'));
       expect(r.title).toBe('Brief: network-engineer');
       expect(r.permissionArgs).toEqual(getJobType('story')?.permissionArgs);
+    });
+
+    it('guide → /tg:start with the topic, ~/projects/<slug> workdir, Perplexity key (Stage 16)', () => {
+      const r = renderJobType('guide', { topic: 'eBPF observability' }, HOME);
+      expect(r.type).toBe('guide');
+      expect(r.instruction).toContain('/tg:start eBPF observability');
+      expect(r.instruction).toContain('scope → research → write → diagrams → build');
+      expect(r.workdir).toBe(join(HOME, 'projects', 'ebpf-observability'));
+      expect(r.title).toBe('Guide: eBPF observability');
+      expect(r.permissionArgs).toEqual(getJobType('story')?.permissionArgs);
+      expect(r.extraEnv).toEqual(['PERPLEXITY_API_KEY']);
+      expect(r.model).toBe('claude-opus-4-8'); // Stage 12: pipeline workers run Opus
+      expect(getJobType('guide')?.experimental).toBe(false);
+    });
+
+    it.each([
+      'deep',
+      'comparison',
+      'explainer',
+    ])('guide variant "%s" renders a variant-directing line', (variant) => {
+      const r = renderJobType('guide', { topic: 'react vs vue', variant }, HOME);
+      expect(r.instruction).toContain(`Use the techguide variant: "${variant}".`);
+    });
+
+    it('guide title suffixes comparison/explainer but NOT deep (the skill default)', () => {
+      const title = (variant: string): string =>
+        renderJobType('guide', { topic: 'react vs vue', variant }, HOME).title;
+      expect(title('comparison')).toBe('Guide: react vs vue (comparison)');
+      expect(title('explainer')).toBe('Guide: react vs vue (explainer)');
+      expect(title('deep')).toBe('Guide: react vs vue');
+    });
+
+    it('guide with variant omitted → no variant line, no title suffix (skill owns the default)', () => {
+      const r = renderJobType('guide', { topic: 'zsh internals' }, HOME);
+      expect(r.instruction).not.toContain('variant');
+      expect(r.title).toBe('Guide: zsh internals');
     });
 
     it('app-build → SDD instruction with the BROADEST profile, flagged experimental', () => {
@@ -139,12 +175,23 @@ describe('job-type registry', () => {
       ['story', { idea: 'x', title: 7 }, 'title'],
       ['study', {}, 'topic'],
       ['brief', {}, 'profile'],
+      ['guide', {}, 'topic'],
+      ['guide', { topic: 'x', variant: 7 }, 'variant'],
       ['app-build', {}, 'idea'],
       ['generic', { workdir: '/tmp' }, 'instruction'],
       ['generic', { instruction: 'x' }, 'workdir'],
     ])('%s with params %o rejects naming "%s"', (type, params, field) => {
       expect(() => renderJobType(type, params, HOME)).toThrow(
         new RegExp(`invalid params for type '${type}'.*"${field}"`),
+      );
+    });
+
+    it('guide rejects a variant outside the closed set with a JobTypeError', () => {
+      expect(() => renderJobType('guide', { topic: 'x', variant: 'quick' }, HOME)).toThrow(
+        JobTypeError,
+      );
+      expect(() => renderJobType('guide', { topic: 'x', variant: 'quick' }, HOME)).toThrow(
+        /invalid params for type 'guide': "variant" must be one of 'deep' \| 'comparison' \| 'explainer'/,
       );
     });
 
@@ -207,6 +254,10 @@ describe('job-type registry', () => {
       expect(preamble).toContain("nightshift submit --type <type> --params '<json>'");
       for (const t of knownJobTypes()) expect(preamble).toContain(`- ${t}`);
       expect(preamble).toContain('EXPERIMENTAL');
+      // Stage 16: the guide usage line reaches new sessions automatically.
+      expect(preamble).toContain(
+        '- guide — interactive tech guide via the /tg:* Techguide pipeline; params {"topic": "...", "variant"?: "deep" | "comparison" | "explainer"}',
+      );
     });
   });
 });
