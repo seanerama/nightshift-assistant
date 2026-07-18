@@ -1,6 +1,6 @@
 # Contract: site-promotion
 
-- **Status:** frozen v1
+- **Status:** frozen v1.1 (v1 + additive techguide shape, stage 17)
 - **Owner:** promotion module (daemon-resident; ADR 0008)
 
 ## Exposes
@@ -49,7 +49,26 @@ and `repoUrl` is the website repo.
 **Gating:** identical to promotion.md — dry-run default, explicit confirm,
 `NIGHTSHIFT_PROMOTE_ENABLED` kill-switch shared.
 
+## Techguide shape (ADDITIVE, v1.1 — stage 17)
+
+Same surface, same PromotionRecord/dry-run/confirm shapes, same kill-switch. A
+second recognized content shape routes to the website pipeline:
+
+- **Detect:** `techguide-config.json` at the content root + `guide/index.html`.
+  Techguide detection takes PRECEDENCE over study detection (tg is an sws fork;
+  residual sws artifacts must not misroute).
+- **Stage:** `guide/index.html` alone → `public/guides/<slug>.html`; with
+  `section-*.html` → `public/guides/<slug>/`; content entry
+  `src/content/guides/<slug>.yaml` (title, slug, description, htmlFile, order);
+  re-promote keeps an existing entry's `order`. Dark-mode conversion only when
+  the source carries the standard light palette.
+- **Health:** content-asserting — fetch the live URL following redirects and
+  match the staged `<title>`; a bare 200 never passes (host serves soft-404s).
+- **`url` distinguisher:** `https://www.<NSAF_DOMAIN>/guides/<slug>`.
+- Reference implementation: `deploy-technical-guide.md` (workstation) + website
+  repo commit `2ba563e` (the manual 2026-07-18 remarkable-paper-pro promotion).
+
 ## Versioning
 
-Frozen at **v1**. Changes are **additive only** — a breaking change is a NEW
+Frozen at **v1.1**. Changes are **additive only** — a breaking change is a NEW
 contract, not an edit (framework-spec §4.3). Every consumer depends on this shape.
