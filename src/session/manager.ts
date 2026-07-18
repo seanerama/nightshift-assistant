@@ -88,13 +88,14 @@ export const CONTROL_PREAMBLE = [
 ].join('\n');
 
 /**
- * Promotion preamble (Stages 11 + 13): appended (after the control preamble)
- * only when BOTH the control surface and NIGHTSHIFT_PROMOTE_ENABLED are on.
- * The confirm discipline lives here: dry-run first, relay the plan, execute
- * only after the operator explicitly confirms in the conversation (ADR 0008).
+ * Promotion preamble (Stages 11 + 13 + 17): appended (after the control
+ * preamble) only when BOTH the control surface and NIGHTSHIFT_PROMOTE_ENABLED
+ * are on. The confirm discipline lives here: dry-run first, relay the plan,
+ * execute only after the operator explicitly confirms in the conversation
+ * (ADR 0008).
  */
 export const PROMOTE_PREAMBLE = [
-  '- `nightshift promote <path> [--slug <s>] [--title <t>] [--dry-run|--yes]` — publish a content project from ~/projects. Study content deploys into the website at https://www.<domain>/study-guides/<slug> (staged, built, pushed; hosting auto-deploys); story promotion is not yet designed and is rejected.',
+  '- `nightshift promote <path> [--slug <s>] [--title <t>] [--dry-run|--yes]` — publish a content project from ~/projects. Study content deploys into the website at https://www.<domain>/study-guides/<slug>; techguide content (techguide-config.json + guide/) deploys at https://www.<domain>/guides/<slug> (both staged, built, pushed; hosting auto-deploys); story promotion is not yet designed and is rejected.',
   '  PROMOTION DISCIPLINE (mandatory): ALWAYS run the dry run first (`nightshift promote <path>` — dry run is the default) and relay the returned plan (slug, URL, repo, steps) to the owner. Execute with `--yes` ONLY after the owner explicitly confirms in this conversation — never promote without that explicit confirmation.',
   '  Execution runs in the background and takes minutes; the result arrives on its own as a 🚀 notice — do not poll.',
 ].join('\n');

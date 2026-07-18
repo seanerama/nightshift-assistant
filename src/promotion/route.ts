@@ -3,6 +3,12 @@
  * POST /api/v1/promote and `nightshift promote`. Content shape decides the
  * pipeline:
  *
+ *   - TECHGUIDE-shaped (techguide-config.json + guide/index.html) → the
+ *     WEBSITE pipeline's techguide path (site.ts, contracts/site-promotion.md
+ *     v1.1) — lands at https://www.<domain>/guides/<slug>. Checked FIRST:
+ *     the tg skill is an sws fork and residual sws artifacts (chapters/,
+ *     guides/) appear in tg workdirs mid-run, so study detection must never
+ *     capture a techguide (Stage 17).
  *   - STUDY-shaped (guides/*.html or textbook.md) → the WEBSITE pipeline
  *     (site.ts, contracts/site-promotion.md) — study content deploys INTO the
  *     Astro site at https://www.<domain>/study-guides/<slug>, never to a
@@ -21,7 +27,13 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { PromoteRequest, PromotionRecord } from '../types.js';
-import { confineToProjects, listGuides, listStoryArtifacts, PromotionError } from './index.js';
+import {
+  confineToProjects,
+  isTechguideOutput,
+  listGuides,
+  listStoryArtifacts,
+  PromotionError,
+} from './index.js';
 import type { Promoter } from './pipeline.js';
 
 export interface PromotionRouterDeps {
@@ -43,6 +55,11 @@ export function createPromotionRouter(deps: PromotionRouterDeps): Promoter {
     async promote(req: PromoteRequest): Promise<PromotionRecord> {
       const sourcePath = confineToProjects(home, req.path);
 
+      // Techguide BEFORE study (Stage 17 precedence hazard): a tg workdir may
+      // still hold residual sws dirs (chapters/, guides/) — the authoritative
+      // techguide marker wins so those never misroute to the study path.
+      if (isTechguideOutput(sourcePath)) return site.promote(req);
+
       const isStudy =
         listGuides(sourcePath).length > 0 || existsSync(join(sourcePath, 'textbook.md'));
       if (isStudy) return site.promote(req);
@@ -54,7 +71,7 @@ export function createPromotionRouter(deps: PromotionRouterDeps): Promoter {
       }
 
       throw new PromotionError(
-        `unrecognized content at ${sourcePath}: expected study output (guides/chapter-NN.html or textbook.md)`,
+        `unrecognized content at ${sourcePath}: expected study output (guides/chapter-NN.html or textbook.md) or techguide output (techguide-config.json + guide/index.html)`,
       );
     },
 

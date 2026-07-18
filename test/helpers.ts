@@ -251,6 +251,14 @@ export interface CloudflareStub extends PromotionStubBase {
 export interface HealthStub extends PromotionStubBase {
   /** 503 the first n GETs (health-retry tests). */
   failFirst(n: number): void;
+  /**
+   * Body 200s serve. The default ('<title>ok</title>') deliberately carries
+   * NO staged guide title — to a content-asserting check it is the host's
+   * soft-404 fallback page (Stage 17).
+   */
+  setBody(html: string): void;
+  /** 308 <from> → <to>, Cloudflare-style clean-URL redirect (Stage 17). */
+  redirect(from: string, to: string): void;
 }
 
 function startRecordingServer(
@@ -365,19 +373,33 @@ export async function startCloudflareStub(): Promise<CloudflareStub> {
 /** Health-target fixture: GET /<slug> → 200 (after failFirst n, when set). */
 export async function startHealthStub(): Promise<HealthStub> {
   let failRemaining = 0;
-  const base = await startRecordingServer((_req, res) => {
+  let body = '<!doctype html><title>ok</title>';
+  const redirects = new Map<string, string>();
+  const base = await startRecordingServer((req, res) => {
     if (failRemaining > 0) {
       failRemaining -= 1;
       respondJson(res, 503, { message: 'not up yet' });
       return;
     }
+    const to = redirects.get(req.path);
+    if (to !== undefined) {
+      res.writeHead(308, { Location: to });
+      res.end();
+      return;
+    }
     res.writeHead(200, { 'Content-Type': 'text/html' });
-    res.end('<!doctype html><title>ok</title>');
+    res.end(body);
   });
   return {
     ...base,
     failFirst(n: number): void {
       failRemaining = n;
+    },
+    setBody(html: string): void {
+      body = html;
+    },
+    redirect(from: string, to: string): void {
+      redirects.set(from, to);
     },
   };
 }
@@ -476,6 +498,16 @@ export function makeWebsiteRepo(dir: string): WebsiteRepoFixture {
   );
   mkdirSync(join(repoDir, 'public', 'study-guides', 'existing'), { recursive: true });
   writeFileSync(join(repoDir, 'public', 'study-guides', 'existing', 'chapter-01.html'), '<p>e</p>');
+  // Stage 17: the techguide collection with one pre-existing entry at order 7
+  // (mirroring the manually promoted remarkable-paper-pro) so techguide order
+  // numbering ("next free" = 8) is observable and independent of studyGuides.
+  mkdirSync(join(repoDir, 'src', 'content', 'guides'), { recursive: true });
+  mkdirSync(join(repoDir, 'public', 'guides'), { recursive: true });
+  writeFileSync(
+    join(repoDir, 'src', 'content', 'guides', 'existing-guide.yaml'),
+    'title: "Existing Techguide"\nslug: "existing-guide"\ndescription: "Already deployed."\nhtmlFile: "existing-guide.html"\norder: 7\n',
+  );
+  writeFileSync(join(repoDir, 'public', 'guides', 'existing-guide.html'), '<p>e</p>');
   git(repoDir, 'add', '-A');
   git(repoDir, 'commit', '-m', 'seed website');
 
@@ -516,6 +548,11 @@ export function makeBunStub(dir: string): { bunPath: string; invocations(): stri
     '    mkdir -p "dist/study-guides/$slug"',
     '    echo "<html>built $slug</html>" > "dist/study-guides/$slug/index.html"',
     '  done',
+    // Astro copies public/ into dist/ verbatim — techguide pages ride that.
+    '  if [ -d public/guides ]; then',
+    '    mkdir -p dist/guides',
+    '    cp -R public/guides/. dist/guides/',
+    '  fi',
     'fi',
     'exit 0',
     '',

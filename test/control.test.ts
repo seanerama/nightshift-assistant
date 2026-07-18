@@ -182,6 +182,10 @@ describe('control-enabled session spawn (Stage 5 gating)', () => {
     expect(prompt).toContain('nightshift promote');
     expect(prompt).toContain('dry run');
     expect(prompt).toContain('explicitly confirms');
+    // Stage 17: techguide promotes to /guides/<slug>; story is still rejected.
+    expect(prompt).toContain('techguide content (techguide-config.json + guide/)');
+    expect(prompt).toContain('https://www.<domain>/guides/<slug>');
+    expect(prompt).toContain('story promotion is not yet designed and is rejected');
     expect(prompt.indexOf(CONTROL_PREAMBLE)).toBeLessThan(prompt.indexOf(PROMOTE_PREAMBLE));
   });
 
