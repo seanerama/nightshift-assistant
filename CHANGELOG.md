@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.9.0
+
+### Other
+- ops: stage 18 merged, ship blocked on workstation tailnet link (note in STATUS)
+- [stage 18] Pipeline workers may call the Perplexity MCP server (#41) (#42)
+- Plan: Stage 18 spec — Perplexity MCP allow-rule for pipeline workers (#41)
+- ship: v0.8.0 — techguide promotion live, stage-17 smoke verified (promotion 9b53ab10)
+
 ## 0.8.0
 
 ### Other
