@@ -10,13 +10,13 @@
       "rotation": "enabled (NIGHTSHIFT_ROTATION_ENABLED=true); stage-2 smoke passed 2026-07-06",
       "jobs": "enabled (NIGHTSHIFT_JOBS_ENABLED=true); stage-4 smoke passed 2026-07-06 (succeed + reconcile-adopt + kill + Webex notices)",
       "stages": "1-18 live: spine, rotation, jobs, control API+CLI, type registry, acks, KillMode=process, delivery+formatted notices, content promotion (study + techguide), explicit models + dispatch honesty, study promotion → www/study-guides, sk- scanner fix, build-gate Astro 5 cache clear, guide job type (/tg pipeline), permission-reality preamble, techguide promotion → /guides, Perplexity MCP for pipeline workers",
-      "verified": "2026-07-21 19:50Z: v0.9.0 deployed, service ACTIVE; stage-18 headless probe PASSED on host (mcp__perplexity rule → zero permission_denials, real Perplexity result via installed CLI); end-to-end research-citation check in flight (guide job 742477ad, jq basics)"
+      "verified": "2026-07-21 20:40Z: v0.9.0 stage-18 smoke PASSED end-to-end — headless probe zero denials; guide job 742477ad succeeded with research via Perplexity MCP (11 mcp__perplexity calls in worker transcript, 5 research files ~17.8k words with citations; sentinel confirms no WebSearch fallback)"
     }
   },
   "secret_locations": [
     "WEBEX_BOT_TOKEN, WEBEX_WEBHOOK_SECRET, WEBEX_OWNER_PERSON_ID, NIGHTSHIFT_AGENT_BIN @ ~/apps/nightshift-assistant/.env on the dev server (mode 0600)"
   ],
   "notes": [
-    "stage-18 research-citation smoke (guide job 742477ad) in flight at ship time — on ✅, confirm research/*.md cite Perplexity (not WebSearch fallback)"
+    "open thread: issue #33 (study promotion health check fooled by soft-404s — techguide check already content-asserting)"
   ]
 }
