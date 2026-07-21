@@ -17,6 +17,6 @@
     "WEBEX_BOT_TOKEN, WEBEX_WEBHOOK_SECRET, WEBEX_OWNER_PERSON_ID, NIGHTSHIFT_AGENT_BIN @ ~/apps/nightshift-assistant/.env on the dev server (mode 0600)"
   ],
   "notes": [
-    "full loop now live end-to-end: Webex ask → guide job (Opus /tg pipeline) → nightshift promote → /guides/<slug> with content-asserted health"
+    "BLOCKED 2026-07-21: stage 18 (Perplexity MCP allow-rule, 95aa925) merged on main but NOT deployed — prod on v0.8.0; workstation tailnet link to 3090-tuf down (host itself up via funnel). On link restore: cut v0.9.0 or patch, deploy, run docs/smoke/stage-18.md (headless probe + research-citation check)."
   ]
 }
