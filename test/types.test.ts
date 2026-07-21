@@ -43,6 +43,11 @@ describe('job-type registry', () => {
       expect(r.permissionArgs).toContain('--permission-mode');
       expect(r.permissionArgs).toContain('acceptEdits');
       expect(r.permissionArgs).toContain('--allowedTools');
+      // Stage 18: the research seam — the ONE server-level MCP rule, and only
+      // that server (a bare mcp__* must never appear in any profile).
+      const allowed = r.permissionArgs[r.permissionArgs.indexOf('--allowedTools') + 1] ?? '';
+      expect(allowed).toContain('mcp__perplexity');
+      expect(allowed).not.toMatch(/mcp__\*|mcp__ /);
       expect(r.extraEnv).toContain('ELEVENLABS_API_KEY');
       expect(r.extraEnv).toContain('GEMINI_API_KEY');
       expect(r.model).toBe('claude-opus-4-8'); // Stage 12: pipeline workers run Opus

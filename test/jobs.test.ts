@@ -600,6 +600,7 @@ describe('job runner', () => {
       const allowed = args[args.indexOf('--allowedTools') + 1] ?? '';
       expect(allowed).toContain('Bash(node *)');
       expect(allowed).toContain('Bash(curl *)');
+      expect(allowed).toContain('mcp__perplexity'); // Stage 18: the research seam
       expect(allowed.split(' ')).not.toContain('Bash'); // never wholesale
     });
 

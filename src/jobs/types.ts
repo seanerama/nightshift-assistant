@@ -133,6 +133,12 @@ function optionalGuideVariant(params: JobParams): GuideVariant | undefined {
  * actually run (node/python3 helpers, ffmpeg/ffprobe assembly, curl for TTS/
  * image APIs). Deliberately absent: bare `Bash`, bare `Read`/`Edit`/`Write`
  * (each would break the workdir scoping), and `cat` (Read covers in-workdir).
+ *
+ * mcp__perplexity (Stage 18, issue #41): the sws/tg research seam. SERVER-level
+ * rule for the one research server configured in the host's user-scope
+ * mcpServers (its API key lives in that server config, not the worker env);
+ * without it, headless workers get the tool denied and the skills silently
+ * fall back to WebSearch. Never widen to `mcp__*`.
  */
 const PIPELINE_ALLOWED_TOOLS = [
   'Skill',
@@ -140,6 +146,7 @@ const PIPELINE_ALLOWED_TOOLS = [
   'TodoWrite',
   'WebFetch',
   'WebSearch',
+  'mcp__perplexity',
   'Bash(node *)',
   'Bash(python3 *)',
   'Bash(ffmpeg *)',
