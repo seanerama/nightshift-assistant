@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.9.1
+
+### Fixes
+- promote-skill dead-end + brittle techguide marker detection (#43) (#44)
+
+### Other
+- Plan: site-promotion v1.2 — techguide detection keys on the artifact, marker optional (#43)
+- ship: v0.9.0 smoke verified — Perplexity MCP research live in headless pipelines (job 742477ad)
+- ship: v0.9.0 — Perplexity MCP for pipeline workers; probe verified on host (job 742477ad in flight)
+
 ## 0.9.0
 
 ### Other
