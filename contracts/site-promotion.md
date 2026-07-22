@@ -1,6 +1,6 @@
 # Contract: site-promotion
 
-- **Status:** frozen v1.1 (v1 + additive techguide shape, stage 17)
+- **Status:** frozen v1.2 (v1.1 + additive techguide detection loosening, issue #43)
 - **Owner:** promotion module (daemon-resident; ADR 0008)
 
 ## Exposes
@@ -54,9 +54,13 @@ and `repoUrl` is the website repo.
 Same surface, same PromotionRecord/dry-run/confirm shapes, same kill-switch. A
 second recognized content shape routes to the website pipeline:
 
-- **Detect:** `techguide-config.json` at the content root + `guide/index.html`.
-  Techguide detection takes PRECEDENCE over study detection (tg is an sws fork;
-  residual sws artifacts must not misroute).
+- **Detect:** `guide/index.html` at the content root — the tg skill's actual
+  artifact contract. (v1.2, issue #43: the `techguide-config.json` marker is
+  OPTIONAL metadata — live runs showed the skill does not reliably write it;
+  detection accepting strictly more content is additive. Description sourcing
+  falls back `techguide-config.json` → `config.json` → generated.) Techguide
+  detection takes PRECEDENCE over study detection (tg is an sws fork; residual
+  sws artifacts must not misroute).
 - **Stage:** `guide/index.html` alone → `public/guides/<slug>.html`; with
   `section-*.html` → `public/guides/<slug>/`; content entry
   `src/content/guides/<slug>.yaml` (title, slug, description, htmlFile, order);
@@ -70,5 +74,5 @@ second recognized content shape routes to the website pipeline:
 
 ## Versioning
 
-Frozen at **v1.1**. Changes are **additive only** — a breaking change is a NEW
+Frozen at **v1.2**. Changes are **additive only** — a breaking change is a NEW
 contract, not an edit (framework-spec §4.3). Every consumer depends on this shape.
