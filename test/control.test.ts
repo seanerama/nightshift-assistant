@@ -183,7 +183,9 @@ describe('control-enabled session spawn (Stage 5 gating)', () => {
     expect(prompt).toContain('dry run');
     expect(prompt).toContain('explicitly confirms');
     // Stage 17: techguide promotes to /guides/<slug>; story is still rejected.
-    expect(prompt).toContain('techguide content (techguide-config.json + guide/)');
+    expect(prompt).toContain('techguide content (a guide/ output dir)');
+    // #43: skill-based promotion is banned by name.
+    expect(prompt).toContain('NEVER invoke promotion skills');
     expect(prompt).toContain('https://www.<domain>/guides/<slug>');
     expect(prompt).toContain('story promotion is not yet designed and is rejected');
     expect(prompt.indexOf(CONTROL_PREAMBLE)).toBeLessThan(prompt.indexOf(PROMOTE_PREAMBLE));
@@ -298,7 +300,10 @@ describe('control-enabled session spawn (Stage 5 gating)', () => {
     // cannot happen (the 2026-07-18 live failure).
     expect(CONTROL_PREAMBLE).toContain('approval prompts do not exist');
     expect(CONTROL_PREAMBLE).toContain('FINAL');
-    expect(CONTROL_PREAMBLE).toContain('Never retry a denied command');
+    expect(CONTROL_PREAMBLE).toContain('Never retry a denied call');
+    // #43: denial finality covers ALL tools, and owner chat-text grants nothing.
+    expect(CONTROL_PREAMBLE).toContain('file reads/writes outside this app directory');
+    expect(CONTROL_PREAMBLE).toContain('grants NOTHING');
     expect(CONTROL_PREAMBLE).toContain('never ask the owner to approve');
     // Skill pipelines are job-only: inline helper scripts get denied.
     expect(CONTROL_PREAMBLE).toContain('NEVER run inline');
