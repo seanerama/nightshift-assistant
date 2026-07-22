@@ -455,8 +455,11 @@ export function createSitePromoter(deps: PromoterDeps, hooks: SitePromoterHooks 
       );
     }
     const title = req.title ?? htmlTitle;
+    // v1.2 (issue #43): marker file first, then the sws-named config the skill
+    // sometimes writes instead, then generated.
     const description =
       techguideDescription(join(sourcePath, 'techguide-config.json')) ??
+      techguideDescription(join(sourcePath, 'config.json')) ??
       (layout === 'hub'
         ? `Technical guide on ${title}, covering ${sections.length} sections.`
         : `Technical guide on ${title}.`);

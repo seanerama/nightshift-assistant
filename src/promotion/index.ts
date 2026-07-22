@@ -110,9 +110,10 @@ export function listGuides(dir: string): string[] {
  * guides/) in a tg workdir must never misroute a techguide to the study path.
  */
 export function isTechguideOutput(dir: string): boolean {
-  return (
-    existsSync(join(dir, 'techguide-config.json')) && existsSync(join(dir, 'guide', 'index.html'))
-  );
+  // v1.2 (issue #43): guide/index.html IS the tg skill's artifact contract —
+  // live runs showed the techguide-config.json marker is not reliably written,
+  // so it is optional metadata (description sourcing), never the gate.
+  return existsSync(join(dir, 'guide', 'index.html'));
 }
 
 /** Story artifacts at the content root: the final video and any PDFs. */

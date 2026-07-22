@@ -199,6 +199,33 @@ describe('techguide promotion (router + site pipeline, Stage 17)', () => {
       expect(record.url).toBe('https://www.example.test/study-guides/plain-study');
     });
 
+    it('guide/index.html WITHOUT the marker IS a techguide — netclaw regression (#43)', async () => {
+      // The 2026-07-22 live failure: the tg skill wrote config.json (the sws
+      // name) but never techguide-config.json; the artifact is the contract.
+      const netclawDir = join(tmpDir, 'projects', 'netclaw-shape');
+      mkdirSync(join(netclawDir, 'guide'), { recursive: true });
+      writeFileSync(
+        join(netclawDir, 'config.json'),
+        JSON.stringify({ topic: 'netclaw', description: 'From the sws-named config.' }),
+      );
+      writeFileSync(join(netclawDir, 'guide', 'index.html'), DARK_NATIVE_INDEX);
+      const plan = await router.promote({ path: netclawDir, confirm: false });
+      expect(plan.status).toBe('planned');
+      expect(plan.url).toContain('/guides/netclaw-shape');
+      health.setBody(
+        '<!doctype html><html><head><title>Git Bisect — Field Guide</title></head><body>live</body></html>',
+      );
+      await router.promote({ path: netclawDir, confirm: true });
+      await waitForFinal('netclaw-shape');
+      expect(statusOf('netclaw-shape')).toBe('live');
+      // Description fell back to config.json (marker absent, not generated).
+      const yaml = readFileSync(
+        join(website.repoDir, 'src', 'content', 'guides', 'netclaw-shape.yaml'),
+        'utf8',
+      );
+      expect(yaml).toContain('From the sws-named config.');
+    });
+
     it('techguide-config.json WITHOUT guide/index.html is not a techguide', async () => {
       const halfDir = join(tmpDir, 'projects', 'half-guide');
       mkdirSync(halfDir, { recursive: true });
@@ -215,9 +242,7 @@ describe('techguide promotion (router + site pipeline, Stage 17)', () => {
       await expect(rejection).rejects.toThrow(/guides\/chapter-NN\.html or textbook\.md/);
       await router
         .promote({ path: empty, confirm: false })
-        .catch((err: unknown) =>
-          expect((err as Error).message).toContain('techguide-config.json + guide/index.html'),
-        );
+        .catch((err: unknown) => expect((err as Error).message).toContain('guide/index.html'));
     });
   });
 

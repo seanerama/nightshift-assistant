@@ -3,7 +3,8 @@
  * POST /api/v1/promote and `nightshift promote`. Content shape decides the
  * pipeline:
  *
- *   - TECHGUIDE-shaped (techguide-config.json + guide/index.html) → the
+ *   - TECHGUIDE-shaped (guide/index.html — the tg artifact contract; marker
+ *     optional since v1.2, issue #43) → the
  *     WEBSITE pipeline's techguide path (site.ts, contracts/site-promotion.md
  *     v1.1) — lands at https://www.<domain>/guides/<slug>. Checked FIRST:
  *     the tg skill is an sws fork and residual sws artifacts (chapters/,
@@ -71,7 +72,7 @@ export function createPromotionRouter(deps: PromotionRouterDeps): Promoter {
       }
 
       throw new PromotionError(
-        `unrecognized content at ${sourcePath}: expected study output (guides/chapter-NN.html or textbook.md) or techguide output (techguide-config.json + guide/index.html)`,
+        `unrecognized content at ${sourcePath}: expected study output (guides/chapter-NN.html or textbook.md) or techguide output (guide/index.html)`,
       );
     },
 
