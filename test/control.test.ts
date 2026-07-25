@@ -338,6 +338,28 @@ describe('control-enabled session spawn (Stage 5 gating)', () => {
     expect(CONTROL_PREAMBLE).toContain('closest registered type');
   });
 
+  it('preamble carries the URL-handling directive (Stage 23, live repro 2026-07-25)', () => {
+    // Golden-string pin on the briefing constant, same class as the assertions
+    // above: it proves the words ship, not that the session obeys them — the
+    // behavioral proof is the live smoke (docs/smoke/stage-23.md).
+    expect(CONTROL_PREAMBLE).toContain('URL HANDLING');
+    // 1. Never-fetch-here, stated as design (not a misconfiguration to retry).
+    expect(CONTROL_PREAMBLE).toContain('NEVER fetch URLs');
+    expect(CONTROL_PREAMBLE).toContain('BY DESIGN');
+    // 2. Workers CAN fetch — the research tools are named.
+    expect(CONTROL_PREAMBLE).toContain('WebFetch');
+    expect(CONTROL_PREAMBLE).toContain('Perplexity');
+    // 3. Dispatch the typed job with the URL verbatim in its params; never
+    //    open by asking the owner to paste the content.
+    expect(CONTROL_PREAMBLE).toMatch(/--params/);
+    expect(CONTROL_PREAMBLE).toMatch(/URL verbatim/i);
+    expect(CONTROL_PREAMBLE).toContain('paste the content');
+    // 4. Social caveat: x.com and friends block server-side fetches; asking
+    //    for the text is a stated FALLBACK after the worker fails, not the opener.
+    expect(CONTROL_PREAMBLE).toMatch(/x\.com/i);
+    expect(CONTROL_PREAMBLE).toContain('stated fallback');
+  });
+
   it('flag-off spawn PATH is the inherited PATH untouched (byte-identical env)', async () => {
     const mgr = makeManager({ controlEnabled: false, apiToken: '' });
     await mgr.relay(inbound('hello'));
