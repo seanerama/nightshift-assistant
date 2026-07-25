@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.12.2
+
+### Other
+- [stage 23] Assistant dead-ends on a URL instead of dispatching it to a worker that can fetch (#58)
+- ops: v0.12.1 live — note-ingest runs without Perplexity MCP (smoke confirmed)
+
 ## 0.9.1
 
 ### Fixes
