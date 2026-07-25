@@ -233,6 +233,12 @@ const NOTE_INGEST_PERMISSION_ARGS: readonly string[] = [
   'acceptEdits',
   '--allowedTools',
   NOTE_INGEST_ALLOWED_TOOLS,
+  // Stage 22: the note worker needs NO MCP server (its tools are the file tools +
+  // the two delivery CLIs). `--strict-mcp-config` with no `--mcp-config` makes
+  // `claude` ignore the host's ~/.claude MCP config, so it does NOT spawn the
+  // Perplexity MCP it inherited-but-can't-use — cutting startup cost and removing
+  // a hang vector. (Pipeline types that DO use Perplexity keep their own profile.)
+  '--strict-mcp-config',
 ];
 
 const AUTONOMY_NOTE =
