@@ -8,8 +8,9 @@ paste the content. Run on the prod host after deploy.
 ## 1. Rotate FIRST — the fix is inert until you do
 
 The new URL HANDLING line rides `--append-system-prompt`, which only reaches
-NEW sessions (`src/session/manager.ts`, the appendSystemPrompt path in
-`runTurn`). A resumed session keeps its old briefing forever, so before this
+NEW sessions (`src/session/manager.ts` — `relay()` assembles the prompt parts
+only when starting/seeding a session, never on resume). A resumed session
+keeps its old briefing forever, so before this
 step the deployed fix changes NOTHING on live — testing without rotating
 "verifies" the old prompt.
 
