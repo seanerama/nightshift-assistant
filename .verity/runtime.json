@@ -1,17 +1,18 @@
 {
-  "version": "0.10.0",
-  "deployed_at": "2026-07-25T02:04Z",
-  "rollback_from": "v0.9.1 (git checkout v0.9.1 + rebuild + restart; no migrations in v0.10.0; reMarkable is additive/env-gated — unset NIGHTSHIFT_REMARKABLE_ENABLED to disable)",
+  "version": "0.12.0",
+  "deployed_at": "2026-07-25T03:30Z",
+  "rollback_from": "v0.11.0 (git checkout v0.11.0 + rebuild + restart; no migrations in v0.12.0; the worker timeout is additive/config-gated — NIGHTSHIFT_JOB_TIMEOUT_MS). Full rollback to pre-reMarkable: v0.9.1.",
   "environments": {
     "prod": {
-      "tag": "v0.10.0",
+      "tag": "v0.12.0",
       "host": "dev server (nsaf-dev-server / 3090-tuf, user systemd)",
       "webhook_url": "https://3090-tuf.taile0ffc4.ts.net/webhook",
       "rotation": "enabled (NIGHTSHIFT_ROTATION_ENABLED=true); stage-2 smoke passed 2026-07-06",
       "jobs": "enabled (NIGHTSHIFT_JOBS_ENABLED=true); stage-4 smoke passed 2026-07-06 (succeed + reconcile-adopt + kill + Webex notices)",
-      "remarkable": "enabled (NIGHTSHIFT_REMARKABLE_ENABLED=true, NIGHTSHIFT_REMARKABLE_FOLDER=/NS-Inbox, RMAPI_BIN=~/.local/bin/rmapi); stage-19 smoke passed 2026-07-25: `nightshift remarkable <pdf>` uploaded to reMarkable cloud /NS-Inbox via rmapi (ddvk, v3/tortoise)",
-      "stages": "1-19 live: spine, rotation, jobs, control API+CLI, type registry, acks, KillMode=process, delivery+formatted notices, content promotion (study + techguide), explicit models + dispatch honesty, study promotion → www/study-guides, sk- scanner fix, build-gate Astro 5 cache clear, guide job type (/tg pipeline), permission-reality preamble, techguide promotion → /guides, Perplexity MCP for pipeline workers, reMarkable PUSH (nightshift remarkable → tablet /NS-Inbox via cloud)",
-      "verified": "2026-07-25 02:04Z: v0.10.0 deployed, ACTIVE; reMarkable PUSH smoke passed (nightshift remarkable ~/projects/*.pdf → confirmed in cloud /NS-Inbox). Off-network transport = reMarkable cloud API, no same-network requirement."
+      "remarkable": "PUSH enabled (NIGHTSHIFT_REMARKABLE_ENABLED=true, NIGHTSHIFT_REMARKABLE_FOLDER=/NS-Inbox, RMAPI_BIN=~/.local/bin/rmapi); stage-19 smoke passed 2026-07-25. INBOX live: note-ingest job type (stage 20) consumes notes the reMarkable /Outbound watcher submits — verified end-to-end 2026-07-25 (handwritten note → watcher → note-ingest worker → composed doc → /NS-Inbox).",
+      "job_timeout": "enabled (NIGHTSHIFT_JOB_TIMEOUT_MS default 2h; note-ingest 15m) — stage 21: a stalled `running` worker is killed + recorded `killed (timed out after Nm)` via the reconcile tick, restart-safe. Added after a note-ingest worker hung on a stalled model call.",
+      "stages": "1-21 live: (1-18 spine/rotation/jobs/control/pipelines/promotions/perplexity-MCP) + reMarkable PUSH (19), note-ingest INBOX job type (20), per-job worker timeout (21)",
+      "verified": "2026-07-25 ~03:30Z: v0.12.0 deployed, ACTIVE. reMarkable PUSH + INBOX round-trip verified live; worker-timeout reaper live (default 2h / note-ingest 15m). Off-network transport = reMarkable cloud API."
     }
   },
   "secret_locations": [
