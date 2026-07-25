@@ -252,6 +252,8 @@ describe('job-type registry', () => {
         'acceptEdits',
         '--allowedTools',
         'Read Grep Glob Write Bash(nightshift deliver *) Bash(remarkable-bridge push *)',
+        // Stage 22: no MCP — ignore the host config so Perplexity isn't spawned.
+        '--strict-mcp-config',
       ]);
       const allowed = args[args.indexOf('--allowedTools') + 1] ?? '';
       // Only the two scoped Bash prefixes — never bare `Bash` or `Bash(*)`.
@@ -260,6 +262,13 @@ describe('job-type registry', () => {
       expect(/(^| )Bash( |$)/.test(allowed), 'no bare Bash').toBe(false);
       expect(allowed).not.toContain('Bash(*)');
       expect(allowed).not.toContain('bypassPermissions');
+    });
+
+    it('runs with NO MCP: --strict-mcp-config present, no --mcp-config (Perplexity not spawned)', () => {
+      const args = getJobType('note-ingest')?.permissionArgs ?? [];
+      expect(args).toContain('--strict-mcp-config');
+      // strict + no --mcp-config => zero MCP servers loaded (host ~/.claude ignored).
+      expect(args).not.toContain('--mcp-config');
     });
 
     it('extraEnv names only RMAPI_BIN (no blocked-prefix var) and forwards it name-explicitly', () => {
