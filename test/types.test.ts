@@ -42,6 +42,15 @@ describe('job-type registry', () => {
     }
   });
 
+  it('gives note-ingest a tight per-type timeout; other types inherit the config default (Stage 21)', () => {
+    // The interactive INBOX type is the one observed to stall — bound at 15m.
+    expect(getJobType('note-ingest')?.timeoutMs).toBe(900_000);
+    // Everyone else omits timeoutMs → inherits NIGHTSHIFT_JOB_TIMEOUT_MS.
+    for (const t of ['generic', 'story', 'study', 'brief', 'guide', 'app-build']) {
+      expect(getJobType(t)?.timeoutMs, `${t} inherits the default`).toBeUndefined();
+    }
+  });
+
   describe('rendering per type', () => {
     it('story → /story:start with the idea, ~/projects/<slug> workdir, scoped write profile', () => {
       const r = renderJobType('story', { idea: 'a turtle who is afraid of water' }, HOME);

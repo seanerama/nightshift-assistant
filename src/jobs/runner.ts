@@ -233,6 +233,35 @@ export function createJobRunner(
     }
   };
 
+  /**
+   * Signal a live worker down: SIGTERM, then SIGKILL after the grace period if
+   * it survives. The SHARED kill mechanism behind both operator kill() and the
+   * Stage 21 timeout reaper — callers own the guarded status transition; this
+   * only signals the process.
+   */
+  const signalWorker = (id: string, pid: number): void => {
+    try {
+      process.kill(pid, 'SIGTERM');
+    } catch (err) {
+      log.warn('SIGTERM failed', {
+        jobId: id,
+        pid,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    const graceTimer = setTimeout(() => {
+      if (isAlive(pid)) {
+        log.warn('worker survived SIGTERM grace; sending SIGKILL', { jobId: id, pid });
+        try {
+          process.kill(pid, 'SIGKILL');
+        } catch {
+          // Died between the check and the signal — nothing to do.
+        }
+      }
+    }, config.jobKillGraceSec * 1000);
+    graceTimer.unref();
+  };
+
   const logTail = (logPath: string): string => {
     try {
       const lines = readFileSync(logPath, 'utf8').trimEnd().split('\n');
@@ -523,6 +552,57 @@ export function createJobRunner(
     }
   };
 
+  /**
+   * Stage 21 timeout reaper (restart-safe). A LIVE `running` worker whose
+   * PERSISTED start time is older than its timeout — the per-type
+   * JobType.timeoutMs when the row carries a registry marker, else the config
+   * default — is killed via the shared signal path and recorded terminally
+   * `killed` with a "timed out after Nm" reason (distinct from an operator
+   * kill). Keyed off started_at, NOT an in-memory timer, so it survives daemon
+   * restarts: the next life's reconcile re-derives the age from the row.
+   *
+   * Race safety: the terminal transition is the SAME guarded transitionJob the
+   * completion path uses. A worker that writes its sentinel / exits on the same
+   * tick settles via finishJob first (or this settles first) — whichever wins,
+   * the loser's transition is not applied (running is no longer the row's
+   * status), so there is exactly one terminal transition and one notice.
+   */
+  const enforceTimeout = (row: {
+    id: string;
+    pid: number | null;
+    started_at: string | null;
+  }): void => {
+    if (row.started_at === null) return; // a running row always has one — belt & suspenders
+    const startedMs = Date.parse(row.started_at);
+    if (Number.isNaN(startedMs)) return;
+    const ageMs = Date.now() - startedMs;
+    const timeoutMs = registryEntryFor(row.id)?.timeoutMs ?? config.jobTimeoutMs;
+    if (ageMs <= timeoutMs) return; // within its bound: left alone
+
+    const elapsedMin = Math.round(ageMs / 60_000);
+    log.warn('reconciler: running worker exceeded its timeout; killing', {
+      jobId: row.id,
+      pid: row.pid,
+      ageMs,
+      timeoutMs,
+    });
+    if (row.pid !== null && isAlive(row.pid)) signalWorker(row.id, row.pid);
+    // Guarded terminal transition (first writer wins the race with completion).
+    if (!transitionJob(db, log, row.id, 'killed').applied) return;
+    const killed = getRow(row.id);
+    if (killed !== null) {
+      emitFinish(
+        killed,
+        killedNotice({
+          title: killed.title,
+          type: killed.type,
+          reason: `timed out after ${elapsedMin}m`,
+        }),
+      );
+    }
+    startQueuedJobs();
+  };
+
   return {
     submit(job: JobSubmit): JobRecord {
       validateSubmit(job);
@@ -591,27 +671,7 @@ export function createJobRunner(
       if (row === null) throw new JobError(`kill: no such job: ${id}`);
 
       if (row.status === 'running' && row.pid !== null && isAlive(row.pid)) {
-        const pid = row.pid;
-        try {
-          process.kill(pid, 'SIGTERM');
-        } catch (err) {
-          log.warn('SIGTERM failed', {
-            jobId: id,
-            pid,
-            error: err instanceof Error ? err.message : String(err),
-          });
-        }
-        const graceTimer = setTimeout(() => {
-          if (isAlive(pid)) {
-            log.warn('worker survived SIGTERM grace; sending SIGKILL', { jobId: id, pid });
-            try {
-              process.kill(pid, 'SIGKILL');
-            } catch {
-              // Died between the check and the signal — nothing to do.
-            }
-          }
-        }, config.jobKillGraceSec * 1000);
-        graceTimer.unref();
+        signalWorker(id, row.pid);
       }
 
       // queued → killed and running → killed are both legal; terminal rows reject.
@@ -648,20 +708,26 @@ export function createJobRunner(
 
     reconcile(): void {
       const running = db
-        .prepare(`SELECT id, pid FROM jobs WHERE status = 'running'`)
-        .all() as Array<{ id: string; pid: number | null }>;
+        .prepare(`SELECT id, pid, started_at FROM jobs WHERE status = 'running'`)
+        .all() as Array<{ id: string; pid: number | null; started_at: string | null }>;
       for (const row of running) {
-        if (isAlive(row.pid)) continue; // live worker: left alone
-        log.info('reconciler: running row has no live process; settling', {
-          jobId: row.id,
-          pid: row.pid,
-        });
-        finishJob(
-          row.id,
-          row.pid === null
-            ? 'no pid was recorded (reconciled)'
-            : `process ${row.pid} is gone (reconciled)`,
-        );
+        if (!isAlive(row.pid)) {
+          log.info('reconciler: running row has no live process; settling', {
+            jobId: row.id,
+            pid: row.pid,
+          });
+          finishJob(
+            row.id,
+            row.pid === null
+              ? 'no pid was recorded (reconciled)'
+              : `process ${row.pid} is gone (reconciled)`,
+          );
+          continue;
+        }
+        // Live worker: enforce the wall-clock timeout (Stage 21). A stalled
+        // worker (alive but wedged) is reaped here; one within its bound is
+        // left untouched.
+        enforceTimeout(row);
       }
       startQueuedJobs();
     },
