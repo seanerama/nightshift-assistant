@@ -69,9 +69,14 @@ export function failureNotice(input: {
   );
 }
 
-/** ⏹ killed. */
-export function killedNotice(input: { title: string; type: string }): string {
-  return `⏹ **${input.title}** — ${input.type} killed`;
+/**
+ * ⏹ killed. An optional `reason` (Stage 21: `timed out after Nm`) is appended
+ * in parentheses so an automatic timeout reaping reads distinctly from a bare
+ * operator kill; omitted → the unchanged operator-kill string.
+ */
+export function killedNotice(input: { title: string; type: string; reason?: string }): string {
+  const base = `⏹ **${input.title}** — ${input.type} killed`;
+  return input.reason === undefined ? base : `${base} (${input.reason})`;
 }
 
 /** 🌀 session rotation. */

@@ -51,6 +51,7 @@ describe('loadConfig', () => {
     expect(config.maxJobs).toBe(1); // sequential by default — parallel workers exhaust the session limit
     expect(config.jobRetryCap).toBe(2);
     expect(config.jobKillGraceSec).toBe(10);
+    expect(config.jobTimeoutMs).toBe(7_200_000); // Stage 21: generous 2h default
     expect(config.controlEnabled).toBe(false); // control surface ships dark
     expect(config.apiToken).toBe('');
     expect(config.attachMaxMb).toBe(80); // Stage 10 delivery knobs
@@ -172,6 +173,17 @@ describe('loadConfig', () => {
     expect(() => loadConfig({ ...FULL_ENV, NIGHTSHIFT_MAX_JOBS: '0' })).toThrow(ConfigError);
     expect(() => loadConfig({ ...FULL_ENV, NIGHTSHIFT_JOB_RETRY_CAP: '-1' })).toThrow(ConfigError);
     expect(() => loadConfig({ ...FULL_ENV, NIGHTSHIFT_JOB_KILL_GRACE_SEC: 'soon' })).toThrow(
+      ConfigError,
+    );
+  });
+
+  it('parses NIGHTSHIFT_JOB_TIMEOUT_MS and fails closed on invalid values (Stage 21)', () => {
+    expect(loadConfig({ ...FULL_ENV, NIGHTSHIFT_JOB_TIMEOUT_MS: '900000' }).jobTimeoutMs).toBe(
+      900_000,
+    );
+    expect(() => loadConfig({ ...FULL_ENV, NIGHTSHIFT_JOB_TIMEOUT_MS: '0' })).toThrow(ConfigError);
+    expect(() => loadConfig({ ...FULL_ENV, NIGHTSHIFT_JOB_TIMEOUT_MS: '-1' })).toThrow(ConfigError);
+    expect(() => loadConfig({ ...FULL_ENV, NIGHTSHIFT_JOB_TIMEOUT_MS: 'soon' })).toThrow(
       ConfigError,
     );
   });

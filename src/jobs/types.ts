@@ -77,6 +77,15 @@ export interface JobTypeEntry {
   extraEnv: readonly string[];
   /** The worker's claude model (Stage 12) — spawned as `--model <id>`. */
   model: string;
+  /**
+   * Optional per-type wall-clock timeout in ms (Stage 21). The runner's
+   * reconcile timeout reaper uses this instead of the config default
+   * (NIGHTSHIFT_JOB_TIMEOUT_MS) when settling THIS type's `running` workers;
+   * types that omit it inherit the default. A tighter bound suits short,
+   * interactive types (note-ingest) so a stalled one is reaped promptly,
+   * while heavy content/app pipelines keep the generous default.
+   */
+  timeoutMs?: number;
 }
 
 /** ~/projects/<slug>-style slug: lowercase, alnum runs joined by '-', bounded. */
@@ -454,6 +463,11 @@ const registry: readonly JobTypeEntry[] = [
     //    Webex reply path works regardless.
     extraEnv: ['RMAPI_BIN'],
     model: WORKER_MODEL_HEAVY,
+    // Stage 21: the interactive INBOX type is the one observed to stall (live
+    // 2026-07-25, blocked in ep_poll on a wedged API turn) — a note interpret+
+    // deliver is short, so a tight 15-minute bound reaps a wedged one promptly
+    // instead of waiting out the generous daemon default.
+    timeoutMs: 900_000,
   },
   {
     // EXPERIMENTAL — the old NSAF posture: an unattended SDD build with the

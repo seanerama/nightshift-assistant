@@ -101,6 +101,16 @@ describe('notice variants (golden strings)', () => {
     );
   });
 
+  it('killed with a timeout reason reads distinctly from an operator kill (Stage 21)', () => {
+    expect(
+      killedNotice({
+        title: 'note: shopping list',
+        type: 'note-ingest',
+        reason: 'timed out after 15m',
+      }),
+    ).toBe('⏹ **note: shopping list** — note-ingest killed (timed out after 15m)');
+  });
+
   it('rotation', () => {
     expect(rotationNotice('daily', 'logs/daily/2026-07-06.md')).toBe(
       '🌀 Session rotated (daily) — summary at logs/daily/2026-07-06.md',

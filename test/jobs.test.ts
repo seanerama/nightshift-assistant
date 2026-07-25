@@ -340,6 +340,105 @@ describe('job runner', () => {
     });
   });
 
+  describe('worker timeout (Stage 21)', () => {
+    /** Rewind a row's persisted start time so it reads as `minsAgo` old. */
+    const backdateStart = (id: string, minsAgo: number): void => {
+      db.prepare('UPDATE jobs SET started_at = ? WHERE id = ?').run(
+        new Date(Date.now() - minsAgo * 60_000).toISOString(),
+        id,
+      );
+    };
+
+    it('reaps an over-age live worker: killed + terminal timeout notice ONCE', async () => {
+      const runner = makeRunner({ jobTimeoutMs: 60_000 }); // 1-minute bound
+      const record = submit(runner, 'MODE=sleep SLEEP_MS=60000');
+      await waitFor(() => runner.get(record.id)?.pid !== null);
+      const pid = runner.get(record.id)?.pid as number;
+      expect(pidIsAlive(pid)).toBe(true);
+
+      backdateStart(record.id, 5); // persisted start 5 min ago > 1 min bound
+      runner.reconcile();
+
+      // Terminal `killed`, worker signalled down, exactly one timeout notice.
+      expect(runner.get(record.id)?.status).toBe('killed');
+      expect(runner.get(record.id)?.endedAt).toBeTruthy();
+      await waitFor(() => !pidIsAlive(pid));
+      await new Promise((r) => setTimeout(r, 200));
+      expect(notices).toHaveLength(1);
+      expect(notices[0]?.job.status).toBe('killed');
+      expect(notices[0]?.notice).toContain('⏹ **test job** — test killed (timed out after 5m)');
+      // No retry row spawned — a timeout is terminal, not a retryable failure.
+      expect(runner.list()).toHaveLength(1);
+      expect(runner.get(record.id)?.attempts).toBe(0);
+    });
+
+    it('leaves a live worker within its timeout untouched', async () => {
+      const runner = makeRunner({ jobTimeoutMs: 3_600_000 }); // 1-hour bound
+      const record = submit(runner, 'MODE=sleep SLEEP_MS=60000');
+      await waitFor(() => runner.get(record.id)?.pid !== null);
+      const pid = runner.get(record.id)?.pid as number;
+
+      backdateStart(record.id, 5); // 5 min old, well within the hour
+      runner.reconcile();
+
+      expect(runner.get(record.id)?.status).toBe('running');
+      await new Promise((r) => setTimeout(r, 150));
+      expect(notices).toHaveLength(0);
+      runner.kill(record.id); // cleanup
+      await waitFor(() => !pidIsAlive(pid));
+    });
+
+    it('a per-type timeoutMs overrides the config default', async () => {
+      // Default 1h; note-ingest's registry override is 15m. Two live workers,
+      // both 20 min old: the note-ingest-marked one trips its 15m override, the
+      // unmarked (default) one stays under the 1h default.
+      const runner = makeRunner({ typesEnabled: true, jobTimeoutMs: 3_600_000 });
+      const note = submit(runner, 'MODE=sleep SLEEP_MS=60000');
+      const plain = submit(runner, 'MODE=sleep SLEEP_MS=60000');
+      await waitFor(() => runner.get(note.id)?.pid !== null && runner.get(plain.id)?.pid !== null);
+      const notePid = runner.get(note.id)?.pid as number;
+      const plainPid = runner.get(plain.id)?.pid as number;
+
+      // Mark the first row as note-ingest so registryEntryFor resolves its 15m
+      // override (the marker is how a typed row's spawn profile is persisted).
+      writeFileSync(join(tmpDir, 'jobs', note.id, 'job-type.txt'), 'note-ingest');
+      backdateStart(note.id, 20);
+      backdateStart(plain.id, 20);
+      runner.reconcile();
+
+      expect(runner.get(note.id)?.status).toBe('killed'); // 20m > 15m override
+      expect(runner.get(plain.id)?.status).toBe('running'); // 20m < 1h default
+      await waitFor(() => !pidIsAlive(notePid));
+      await new Promise((r) => setTimeout(r, 150));
+      expect(notices).toHaveLength(1);
+      expect(notices[0]?.job.id).toBe(note.id);
+      expect(notices[0]?.notice).toContain('killed (timed out after 20m)');
+
+      runner.kill(plain.id); // cleanup
+      await waitFor(() => !pidIsAlive(plainPid));
+    });
+
+    it('race: a worker that completed at the deadline settles succeeded, not clobbered by the timeout', async () => {
+      // A dead-pid over-age row WITH a valid success sentinel models a worker
+      // that finished right as the timeout would fire: the reconciler settles it
+      // via the sentinel (guarded transition wins), never re-transitions to a
+      // timeout kill, and fires exactly one success notice.
+      const id = insertOrphanRunningRow({
+        pid: deadPid(),
+        sentinel: { schema: 1, status: 'success', summary: 'finished at the deadline' },
+      });
+      backdateStart(id, 30); // older than the tiny bound below
+      const runner = makeRunner({ jobTimeoutMs: 60_000 });
+      runner.reconcile();
+
+      expect(runner.get(id)?.status).toBe('succeeded');
+      await new Promise((r) => setTimeout(r, 150));
+      expect(notices).toHaveLength(1);
+      expect(notices[0]?.job.status).toBe('succeeded');
+      expect(notices[0]?.notice).toContain('finished at the deadline');
+    });
+  });
+
   describe('concurrency', () => {
     it('with max 1, the second submit stays queued until the first finishes, then auto-starts', async () => {
       const runner = makeRunner({ maxJobs: 1 });

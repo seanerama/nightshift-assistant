@@ -105,6 +105,17 @@ export interface Config {
   /** Seconds between kill()'s SIGTERM and the SIGKILL follow-up. */
   jobKillGraceSec: number;
   /**
+   * Default per-job wall-clock timeout in ms (Stage 21). A `running` worker
+   * whose PERSISTED start time is older than this — or its per-type override
+   * (JobType.timeoutMs, src/jobs/types.ts) — is killed by the reconciler
+   * (SIGTERM→SIGKILL) and recorded terminally as timed out, so a worker whose
+   * model call stalls (observed live: a note-ingest blocked in ep_poll) fails
+   * cleanly instead of hanging forever. Generous by default (2h) — safely above
+   * the longest legitimate content/app-build pipeline — so existing jobs are
+   * never cut short. Validated fail-closed like the other job numbers.
+   */
+  jobTimeoutMs: number;
+  /**
    * Master switch for the control surface (Stage 5): /api/v1/, the nightshift
    * CLI, and the conversational session's Bash(nightshift *) tool access.
    * Default OFF — with it unset, /api/v1/ returns 403 and session spawns are
@@ -282,6 +293,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     );
   }
 
+  // Per-job wall-clock timeout (Stage 21): generous default (2h) — safely above
+  // the longest legitimate content/app-build pipeline, so a real job is never
+  // cut short; a stalled worker (which would otherwise hang forever) is reaped.
+  // Positive integer, fail-closed like the other job numbers.
+  const jobTimeoutMs = Number.parseInt(env.NIGHTSHIFT_JOB_TIMEOUT_MS ?? '7200000', 10);
+  if (!Number.isInteger(jobTimeoutMs) || jobTimeoutMs < 1) {
+    throw new ConfigError(
+      `NIGHTSHIFT_JOB_TIMEOUT_MS is not a valid positive integer: ${env.NIGHTSHIFT_JOB_TIMEOUT_MS}`,
+    );
+  }
+
   // Control-surface kill-switch: same discipline as rotation/jobs — only
   // exactly "true" enables; "false"/unset stay dark; anything else fails fast.
   const controlRaw = env.NIGHTSHIFT_CONTROL_ENABLED;
@@ -449,6 +471,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     maxJobs,
     jobRetryCap,
     jobKillGraceSec,
+    jobTimeoutMs,
     controlEnabled,
     apiToken,
     typesEnabled,
