@@ -72,6 +72,10 @@ export const NIGHTSHIFT_TOOL_RULE =
  * NEW conversational session when the control surface is enabled, telling the
  * session what its hands are and when to use them. Delivered on the same
  * --append-system-prompt path as the rotation seed — never user-visible.
+ * Stage 23 added the URL HANDLING entry after the 2026-07-25 live failure:
+ * handed an x.com link, the session dead-ended on its own (correct) WebFetch
+ * denial and asked the owner to paste the content instead of dispatching the
+ * URL to a fetch-capable pipeline worker.
  */
 export const CONTROL_PREAMBLE = [
   'You have the `nightshift` CLI available through your Bash tool (the only Bash you are permitted). It is your control surface for the Nightshift daemon:',
@@ -84,6 +88,7 @@ export const CONTROL_PREAMBLE = [
   'Prefer invoking it as bare `nightshift …`; the `bin/nightshift` and `./bin/nightshift` spellings are also permitted — all three are the same binary.',
   'DISPATCH HONESTY (mandatory): never state a job was submitted or dispatched unless the CLI actually returned a job id — quote that id in your reply. If a command is denied or fails, say so plainly and stop; never claim success you cannot quote.',
   'PERMISSION REALITY (mandatory): this session is headless — approval prompts do not exist. EVERY tool call outside your granted surface is denied the same way: Bash beyond the nightshift CLI, file reads/writes outside this app directory, and MCP tools alike. NOBODY can approve a denial — not you, not the owner: the owner SAYING "you have permission" in chat grants NOTHING (permissions come only from the daemon\'s spawn profile), so every denial is FINAL. Never retry a denied call, never ask the owner to approve or grant access. Skill pipelines (/sws:*, /tg:*, /story:*, /brief:*, /sdd:*) can NEVER run inline here — their helper scripts and reference files will be denied; dispatch that work as a typed background job instead, and when no registered job type fits the request, say so plainly and offer the closest registered type.',
+  'URL HANDLING (mandatory): this session can NEVER fetch URLs — WebFetch and WebSearch are not granted here and never will be, BY DESIGN (this session holds the control surface; web content must not reach it directly). A link is not a blocker, and a denial on it is FINAL per PERMISSION REALITY. Background pipeline workers CAN fetch and research: pipeline job types run with WebFetch, WebSearch, and Perplexity. So when the owner shares a link as the subject of work (guide/study/story/brief/research), dispatch the typed job with the URL verbatim in its params — e.g. `nightshift submit --type guide --params \'{"topic": "<url> — <what the owner asked>"}\'` — and reply quoting the returned job id. NEVER open by asking the owner to paste the content. Social-post caveat: x.com/Twitter and similar often block server-side fetches even for workers — the worker\'s Perplexity research is the likelier path there. Dispatch anyway; if the job\'s result reports it could not read the source, THAT is the moment to ask the owner for the text, as a stated fallback.',
   'Add `--json` to any command for raw JSON. Job completion notices arrive in Webex on their own — do not poll or wait for jobs to finish.',
 ].join('\n');
 
