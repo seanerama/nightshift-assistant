@@ -29,7 +29,8 @@
  * <id>`; never reorder.
  */
 
-import { join } from 'node:path';
+import { statSync } from 'node:fs';
+import { isAbsolute, join } from 'node:path';
 
 /** Rejected type/params input (unknown type, bad params). Mapped to 400 upstream. */
 export class JobTypeError extends Error {}
@@ -109,6 +110,30 @@ function optionalString(type: string, params: JobParams, key: string): string | 
   return requireString(type, params, key);
 }
 
+/**
+ * Tolerant string param (Stage 20 note-submission's `text`/`images_dir`): absent
+ * → '', a string (INCLUDING '') passes through verbatim, a non-string present
+ * value rejects. Unlike requireString it does NOT reject '' — the frozen
+ * note-submission contract sends both keys always, either possibly empty.
+ */
+function stringOrEmpty(type: string, params: JobParams, key: string): string {
+  const value = params[key];
+  if (value === undefined) return '';
+  if (typeof value !== 'string') {
+    throw new JobTypeError(`invalid params for type '${type}': "${key}" must be a string`);
+  }
+  return value;
+}
+
+/** True only when `path` is an existing directory (any error — ENOENT, not-a-dir — is false). */
+function isExistingDir(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
 /** The tg skill's closed variant set (default `deep` is the SKILL's, never injected here). */
 const GUIDE_VARIANTS = ['deep', 'comparison', 'explainer'] as const;
 type GuideVariant = (typeof GUIDE_VARIANTS)[number];
@@ -172,6 +197,34 @@ const PIPELINE_PERMISSION_ARGS: readonly string[] = [
  * clearly flagged; every other type must use a scoped profile.
  */
 const APP_BUILD_PERMISSION_ARGS: readonly string[] = ['--permission-mode', 'bypassPermissions'];
+
+/**
+ * The note-ingest profile (Stage 20): a deliberately DIFFERENT posture from
+ * PIPELINE_ALLOWED_TOOLS. The note worker must READ the ordered `page-NN.png`
+ * renders of a handwritten note, and those live in the remarkable-bridge
+ * `images_dir` — which is NOT necessarily under ~/projects and IS the worker's
+ * cwd. So this profile allows the file tools by NAME (`Read Grep Glob Write`)
+ * rather than relying on cwd-scoping alone; acceptEdits auto-accepts the result
+ * file it composes. Delivery is exactly two prefix-scoped CLIs and NOTHING
+ * else: `nightshift deliver *` (Webex reply to the owner room) and
+ * `remarkable-bridge push *` (a doc to the tablet's /NS-Inbox). There is NO
+ * bare `Bash` and NO `Bash(*)` — the worker cannot run arbitrary shell.
+ */
+const NOTE_INGEST_ALLOWED_TOOLS = [
+  'Read',
+  'Grep',
+  'Glob',
+  'Write',
+  'Bash(nightshift deliver *)',
+  'Bash(remarkable-bridge push *)',
+].join(' ');
+
+const NOTE_INGEST_PERMISSION_ARGS: readonly string[] = [
+  '--permission-mode',
+  'acceptEdits',
+  '--allowedTools',
+  NOTE_INGEST_ALLOWED_TOOLS,
+];
 
 const AUTONOMY_NOTE =
   'Work fully autonomously: never ask questions or wait for input; make reasonable choices and continue.';
@@ -311,6 +364,95 @@ const registry: readonly JobTypeEntry[] = [
     permissionArgs: PIPELINE_PERMISSION_ARGS,
     // tg research is the sws fork — it fans out through Perplexity too.
     extraEnv: ['PERPLEXITY_API_KEY'],
+    model: WORKER_MODEL_HEAVY,
+  },
+  {
+    // Stage 20 (issue: note-ingest): the INBOX loop. The remarkable-bridge
+    // watcher shells `nightshift submit --type note-ingest --params '<json>'`
+    // when a note lands in the tablet's /Outbound; this worker reads the note
+    // (typed text + rendered handwriting pages), interprets it, and delivers by
+    // content. Consumes the frozen cross-repo `note-submission` param shape
+    // { note_id, doc_name, source_folder, text, images_dir } — additive, no new
+    // contract, no lifecycle change.
+    type: 'note-ingest',
+    experimental: false,
+    usage:
+      'note-ingest — interpret a reMarkable note (typed text + page-NN.png handwriting renders) and deliver by content: Webex reply and/or a doc pushed to the tablet; params {"note_id": "...", "doc_name": "...", "source_folder": "...", "text"?: "...", "images_dir"?: "..."}',
+    validateParams(params) {
+      requireString('note-ingest', params, 'note_id');
+      requireString('note-ingest', params, 'doc_name');
+      requireString('note-ingest', params, 'source_folder');
+      // text/images_dir are part of the frozen shape but may be '' — validate
+      // type-only (a non-string present value still rejects).
+      stringOrEmpty('note-ingest', params, 'text');
+      stringOrEmpty('note-ingest', params, 'images_dir');
+    },
+    instructionTemplate(params) {
+      const docName = requireString('note-ingest', params, 'doc_name');
+      const sourceFolder = requireString('note-ingest', params, 'source_folder');
+      const text = stringOrEmpty('note-ingest', params, 'text');
+      const imagesDir = stringOrEmpty('note-ingest', params, 'images_dir').trim();
+      const parts: string[] = [
+        `You are processing a note the user wrote on their reMarkable tablet and dropped in ` +
+          `"${sourceFolder}" (document: "${docName}"). Interpret the note and act on what it asks.`,
+      ];
+      if (text.trim() !== '') {
+        parts.push(`The note's typed text is:\n\n${text}`);
+      }
+      if (imagesDir !== '') {
+        parts.push(
+          'The handwritten pages are rendered as ordered `page-NN.png` images in your working ' +
+            'directory — READ every `page-NN.png` (in numeric order) and treat them as the ' +
+            'handwritten content of the note.',
+        );
+      }
+      parts.push(
+        'Then choose delivery BY WHAT THE NOTE ASKS:\n' +
+          "- Reply in the owner's Webex room: write your reply as a markdown file in your working " +
+          'directory, then run `nightshift deliver <file>` (add `--note "<one-line summary>"`).\n' +
+          "- Send a document to the tablet's /NS-Inbox: write your result as markdown to a file in " +
+          'your working directory, then run `remarkable-bridge push --md <file> --title "<name>"`.\n' +
+          '- Do BOTH when the note warrants it. If you cannot complete the request, say so in Webex ' +
+          'with `nightshift deliver`. Always report what you did.',
+      );
+      parts.push(AUTONOMY_NOTE);
+      return parts.join('\n\n');
+    },
+    // images_dir (when a non-empty, existing directory) IS the workdir so the
+    // file tools read the page-NN.png renders and write the result in place;
+    // otherwise a scratch ~/projects/<slug> dir — the house default (and a
+    // deliverable root, so `nightshift deliver` accepts a file written there).
+    // workdirStrategy only receives `home`, so scratch derives from it like
+    // every other typed workdir; the runner mkdir -p's whichever it returns.
+    workdirStrategy(params, home) {
+      const imagesDir = stringOrEmpty('note-ingest', params, 'images_dir').trim();
+      if (imagesDir !== '' && isAbsolute(imagesDir) && isExistingDir(imagesDir)) {
+        return imagesDir;
+      }
+      return join(
+        home,
+        'projects',
+        slugify(`note-${requireString('note-ingest', params, 'note_id')}`),
+      );
+    },
+    titleTemplate: (params) => `note: ${requireString('note-ingest', params, 'doc_name')}`,
+    permissionArgs: NOTE_INGEST_PERMISSION_ARGS,
+    // Delivery-CLI reachability from the default-deny worker env:
+    //  - Webex reply (`nightshift deliver`): FULLY WIRED with NO extra env. The
+    //    nightshift CLI self-recovers its API token/port from the app dir's
+    //    .env (relative to the script's realpath — see bin/nightshift), so the
+    //    worker never holds NIGHTSHIFT_* (a hard-blocked prefix) yet the CLI
+    //    still authenticates. PATH (base allow-list) resolves the binary.
+    //  - Tablet push (`remarkable-bridge push` → `rmapi`): wired via RMAPI_BIN
+    //    (points the bridge at the rmapi binary; NOT a blocked prefix). It is
+    //    additionally OPERATOR-GATED on host provisioning that no env var can
+    //    supply: `remarkable-bridge` + `rmapi` must be on the daemon's PATH
+    //    (forwarded), and rmapi must already be AUTHENTICATED on the host — its
+    //    credentials live in a file under $HOME (forwarded), not an env var, so
+    //    there is nothing to add to the allow-list. If those host prerequisites
+    //    are absent the push line no-ops (the worker reports it in Webex); the
+    //    Webex reply path works regardless.
+    extraEnv: ['RMAPI_BIN'],
     model: WORKER_MODEL_HEAVY,
   },
   {
