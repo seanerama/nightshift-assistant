@@ -6,6 +6,8 @@
  * NIGHTSHIFT_ prefixes blocked no matter what an entry lists.
  */
 
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { workerEnvWith } from '../src/jobs/env.js';
@@ -21,13 +23,21 @@ import {
 const HOME = '/home/tester';
 
 describe('job-type registry', () => {
-  it('registers exactly the Stage 6 catalog (+ guide, Stage 16)', () => {
-    expect(knownJobTypes()).toEqual(['generic', 'story', 'study', 'brief', 'guide', 'app-build']);
+  it('registers exactly the Stage 6 catalog (+ guide, Stage 16; + note-ingest, Stage 20)', () => {
+    expect(knownJobTypes()).toEqual([
+      'generic',
+      'story',
+      'study',
+      'brief',
+      'guide',
+      'note-ingest',
+      'app-build',
+    ]);
   });
 
   it('assigns the Stage 12 per-type worker models (deliberate, never host-inherited)', () => {
     expect(getJobType('generic')?.model).toBe('claude-sonnet-5');
-    for (const t of ['story', 'study', 'brief', 'guide', 'app-build']) {
+    for (const t of ['story', 'study', 'brief', 'guide', 'note-ingest', 'app-build']) {
       expect(getJobType(t)?.model, `${t} runs on Opus`).toBe('claude-opus-4-8');
     }
   });
@@ -141,6 +151,120 @@ describe('job-type registry', () => {
       expect(r.extraEnv).toEqual([]);
       expect(r.model).toBe('claude-sonnet-5'); // Stage 12: generic stays on Sonnet
       expect(getJobType('generic')?.experimental).toBe(false);
+    });
+  });
+
+  describe('note-ingest (Stage 20 — reMarkable note interpretation)', () => {
+    const validParams = {
+      note_id: 'abc-123',
+      doc_name: 'Grocery ideas',
+      source_folder: '/Outbound',
+      text: 'Remind me to buy milk and draft a shopping list.',
+      images_dir: '',
+    };
+
+    it('validateParams accepts a full note-submission params object', () => {
+      expect(() => getJobType('note-ingest')?.validateParams(validParams)).not.toThrow();
+      // text/images_dir may be '' (frozen shape always sends them).
+      expect(() =>
+        getJobType('note-ingest')?.validateParams({
+          note_id: 'n',
+          doc_name: 'd',
+          source_folder: '/Outbound',
+          text: '',
+          images_dir: '',
+        }),
+      ).not.toThrow();
+    });
+
+    it.each([
+      ['note_id', { doc_name: 'd', source_folder: '/Outbound' }],
+      ['doc_name', { note_id: 'n', source_folder: '/Outbound' }],
+      ['source_folder', { note_id: 'n', doc_name: 'd' }],
+    ])('validateParams rejects missing %s', (field, params) => {
+      expect(() => renderJobType('note-ingest', params, HOME)).toThrow(
+        new RegExp(`invalid params for type 'note-ingest'.*"${field}"`),
+      );
+    });
+
+    it('instructionTemplate includes the typed text, source folder, and both delivery options', () => {
+      const r = renderJobType('note-ingest', validParams, HOME);
+      expect(r.instruction).toContain('/Outbound');
+      expect(r.instruction).toContain('Remind me to buy milk and draft a shopping list.');
+      // Both delivery CLIs are named.
+      expect(r.instruction).toContain('nightshift deliver');
+      expect(r.instruction).toContain('remarkable-bridge push --md');
+      // No images_dir → no image-reading instruction.
+      expect(r.instruction).not.toContain('page-NN.png');
+    });
+
+    it('instructionTemplate adds the page-NN.png image-reading instruction when images_dir is set', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'note-imgs-'));
+      const r = renderJobType('note-ingest', { ...validParams, images_dir: dir }, HOME);
+      expect(r.instruction).toContain('page-NN.png');
+      expect(r.instruction).toContain('READ');
+      // Both delivery options still present alongside the image instruction.
+      expect(r.instruction).toContain('nightshift deliver');
+      expect(r.instruction).toContain('remarkable-bridge push --md');
+    });
+
+    it('workdirStrategy returns images_dir when it is an existing absolute path', () => {
+      const dir = mkdtempSync(join(tmpdir(), 'note-imgs-'));
+      const r = renderJobType('note-ingest', { ...validParams, images_dir: dir }, HOME);
+      expect(r.workdir).toBe(dir);
+    });
+
+    it('workdirStrategy falls back to a ~/projects scratch dir when images_dir is empty or absent', () => {
+      const r = renderJobType('note-ingest', validParams, HOME);
+      expect(r.workdir).toBe(join(HOME, 'projects', 'note-abc-123'));
+      // A non-existent images_dir path is ignored too (scratch fallback).
+      const r2 = renderJobType(
+        'note-ingest',
+        { ...validParams, images_dir: '/no/such/dir/xyz' },
+        HOME,
+      );
+      expect(r2.workdir).toBe(join(HOME, 'projects', 'note-abc-123'));
+    });
+
+    it('titleTemplate is `note: <doc_name>`', () => {
+      const r = renderJobType('note-ingest', validParams, HOME);
+      expect(r.title).toBe('note: Grocery ideas');
+    });
+
+    it('model is the heavy reasoning model, not experimental', () => {
+      expect(getJobType('note-ingest')?.model).toBe('claude-opus-4-8');
+      expect(getJobType('note-ingest')?.experimental).toBe(false);
+    });
+
+    it('permissionArgs is EXACTLY the least-privilege set — file tools + the two delivery CLIs, NO arbitrary Bash', () => {
+      const args = getJobType('note-ingest')?.permissionArgs ?? [];
+      expect(args).toEqual([
+        '--permission-mode',
+        'acceptEdits',
+        '--allowedTools',
+        'Read Grep Glob Write Bash(nightshift deliver *) Bash(remarkable-bridge push *)',
+      ]);
+      const allowed = args[args.indexOf('--allowedTools') + 1] ?? '';
+      // Only the two scoped Bash prefixes — never bare `Bash` or `Bash(*)`.
+      expect(allowed).toContain('Bash(nightshift deliver *)');
+      expect(allowed).toContain('Bash(remarkable-bridge push *)');
+      expect(/(^| )Bash( |$)/.test(allowed), 'no bare Bash').toBe(false);
+      expect(allowed).not.toContain('Bash(*)');
+      expect(allowed).not.toContain('bypassPermissions');
+    });
+
+    it('extraEnv names only RMAPI_BIN (no blocked-prefix var) and forwards it name-explicitly', () => {
+      expect(getJobType('note-ingest')?.extraEnv).toEqual(['RMAPI_BIN']);
+      const env = workerEnvWith(getJobType('note-ingest')?.extraEnv ?? [], {
+        PATH: '/usr/bin',
+        HOME: '/home/u',
+        RMAPI_BIN: '/opt/rmapi/rmapi',
+        WEBEX_BOT_TOKEN: 'secret',
+        NIGHTSHIFT_API_TOKEN: 'secret',
+      });
+      expect(env.RMAPI_BIN).toBe('/opt/rmapi/rmapi');
+      expect(env.WEBEX_BOT_TOKEN).toBeUndefined();
+      expect(env.NIGHTSHIFT_API_TOKEN).toBeUndefined();
     });
   });
 

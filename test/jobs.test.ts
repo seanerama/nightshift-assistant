@@ -652,7 +652,7 @@ describe('job runner', () => {
     it('unknown type rejects listing the known types; bad params reject per type', () => {
       const runner = makeRunner({ typesEnabled: true });
       expect(() => runner.submitType('research', {})).toThrow(
-        /unknown job type: research \(known types: generic, story, study, brief, guide, app-build\)/,
+        /unknown job type: research \(known types: generic, story, study, brief, guide, note-ingest, app-build\)/,
       );
       expect(() => runner.submitType('story', {})).toThrow(/"idea" must be a non-empty string/);
       expect(() => runner.submitType('story', 'nope')).toThrow(/JSON object/);
