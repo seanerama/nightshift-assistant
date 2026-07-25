@@ -58,6 +58,38 @@ describe('loadConfig', () => {
     expect(config.promoteEnabled).toBe(false); // promotion ships dark (Stage 11)
     expect(config.promote.cfApiBase).toBe('https://api.cloudflare.com/client/v4');
     expect(config.promote.healthBase).toBe('');
+    expect(config.remarkableEnabled).toBe(false); // reMarkable push ships dark (Stage 19)
+    expect(config.remarkableFolder).toBe('/Inbox');
+    expect(config.rmapiBin).toBe('rmapi');
+  });
+
+  it('enables reMarkable push only on exactly "true" and fails fast on garbage (Stage 19)', () => {
+    expect(loadConfig({ ...FULL_ENV }).remarkableEnabled).toBe(false); // ships dark
+    expect(
+      loadConfig({ ...FULL_ENV, NIGHTSHIFT_REMARKABLE_ENABLED: 'true' }).remarkableEnabled,
+    ).toBe(true);
+    expect(
+      loadConfig({ ...FULL_ENV, NIGHTSHIFT_REMARKABLE_ENABLED: 'false' }).remarkableEnabled,
+    ).toBe(false);
+    expect(() => loadConfig({ ...FULL_ENV, NIGHTSHIFT_REMARKABLE_ENABLED: 'TRUE' })).toThrow(
+      ConfigError,
+    );
+    expect(() => loadConfig({ ...FULL_ENV, NIGHTSHIFT_REMARKABLE_ENABLED: 'on' })).toThrow(
+      ConfigError,
+    );
+  });
+
+  it('reads the Stage 19 reMarkable vars: folder + rmapi bin default, "" treated as unset', () => {
+    expect(loadConfig({ ...FULL_ENV, NIGHTSHIFT_REMARKABLE_FOLDER: '' }).remarkableFolder).toBe(
+      '/Inbox',
+    );
+    expect(
+      loadConfig({ ...FULL_ENV, NIGHTSHIFT_REMARKABLE_FOLDER: '/Reading' }).remarkableFolder,
+    ).toBe('/Reading');
+    expect(loadConfig({ ...FULL_ENV, RMAPI_BIN: '' }).rmapiBin).toBe('rmapi');
+    expect(loadConfig({ ...FULL_ENV, RMAPI_BIN: '/opt/rmapi/rmapi' }).rmapiBin).toBe(
+      '/opt/rmapi/rmapi',
+    );
   });
 
   it('validates the Stage 10 attachment knobs (non-negative integers; 0 disables)', () => {

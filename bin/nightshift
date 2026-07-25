@@ -44,6 +44,11 @@ Usage:
                                    pass --yes to execute (runs in the
                                    background, result arrives as a 🚀 notice
                                    in Webex)
+  nightshift remarkable <path>     Push a document to the owner's reMarkable
+                                   tablet /Inbox via the reMarkable cloud (it
+                                   syncs to the tablet on its next sync; allowed
+                                   roots: ~/projects and the app's jobs/ + logs/
+                                   dirs)
   nightshift rotate                Rotate the conversational session (manual)
   nightshift status                Daemon status (version, uptime, session, job counts)
 
@@ -333,6 +338,21 @@ async function runCommand(conn, parsed) {
           (body.confirm
             ? '\n\nExecution started in the background — the result arrives as a 🚀 notice in Webex.'
             : '\n\nDry run only — NOTHING was executed. Re-run with --yes to execute this plan.'),
+      };
+    }
+    case 'remarkable': {
+      // 1:1 face of POST /api/v1/remarkable (Stage 19): push a document to the
+      // owner's reMarkable tablet /Inbox via the reMarkable cloud.
+      const target = positionals[0];
+      if (target === undefined) fail(`remarkable requires a file path\n\n${USAGE}`);
+      // Resolve relative paths against OUR cwd — the daemon only ever sees
+      // (and confines) an absolute path.
+      const path = await import('node:path');
+      const body = { path: path.resolve(target) };
+      const result = await callApi(conn, 'POST', '/api/v1/remarkable', body);
+      return {
+        result,
+        render: (r) => `Pushed ${r.pushed.path} to reMarkable ${r.pushed.folder}`,
       };
     }
     case 'rotate': {
