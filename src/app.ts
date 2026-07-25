@@ -4,6 +4,7 @@
  * for the Webex cloud, NIGHTSHIFT_AGENT_BIN for the claude binary).
  */
 
+import { execFile } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import type { Server } from 'node:http';
 import { homedir } from 'node:os';
@@ -25,12 +26,16 @@ import {
 } from './session/manager.js';
 import { createApiHandler } from './transport/api.js';
 import { createDeliverer } from './transport/deliver.js';
+import { createRemarkablePusher } from './transport/remarkable.js';
 import { AttachmentError, createSender } from './transport/send.js';
 import { createTransportServer } from './transport/server.js';
 import { createWebexClient } from './transport/webex.js';
 
 /** How often the in-daemon daily-rotation check runs (only when enabled). */
 const DAILY_CHECK_INTERVAL_MS = 60_000;
+
+/** Wall-clock bound on a single `rmapi put` upload (Stage 19). */
+const RMAPI_TIMEOUT_MS = 120_000;
 
 const MIGRATIONS_DIR = fileURLToPath(new URL('../migrations', import.meta.url));
 const PACKAGE_JSON = fileURLToPath(new URL('../package.json', import.meta.url));
@@ -174,6 +179,10 @@ export function createApp(
     home,
   });
 
+  // The allow-listed root set both path-confined capabilities share (Stage 10
+  // deliver + Stage 19 reMarkable push): ~/projects and the app's jobs/ + logs/.
+  const confinedRoots = [join(home, 'projects'), join(appDir, 'jobs'), join(appDir, 'logs')];
+
   const server = createTransportServer({
     config,
     log,
@@ -185,7 +194,8 @@ export function createApp(
     // Control API (Stage 5): mounted on the same loopback server; the handler
     // owns its own kill-switch (403 dark by default) and bearer auth. The
     // Stage 10 deliverer confines paths to ~/projects + the app's jobs/ and
-    // logs/ dirs and routes to the owner's persisted room.
+    // logs/ dirs and routes to the owner's persisted room; the Stage 19
+    // reMarkable pusher confines to the SAME roots and shells rmapi.
     api: createApiHandler({
       config,
       log,
@@ -193,11 +203,40 @@ export function createApp(
       sessions,
       deliver: createDeliverer({
         sender,
-        roots: [join(home, 'projects'), join(appDir, 'jobs'), join(appDir, 'logs')],
+        roots: confinedRoots,
         ownerRoom: () => lastOwnerRoomId,
         log,
       }),
       promote: promoter,
+      // reMarkable PUSH (Stage 19): the route owns the
+      // NIGHTSHIFT_REMARKABLE_ENABLED kill-switch (403 dark by default); the
+      // pusher confines the path and shells `rmapi put`. Constructed
+      // unconditionally, like the promoter. The exec is the real seam here —
+      // tests inject their own `run` (unit) or point RMAPI_BIN at a stub (api).
+      remarkable: createRemarkablePusher({
+        enabled: config.remarkableEnabled,
+        folder: config.remarkableFolder,
+        rmapiBin: config.rmapiBin,
+        allowedRoots: confinedRoots,
+        run: (argv) =>
+          new Promise((resolve) => {
+            const [cmd, ...args] = argv;
+            execFile(
+              cmd ?? config.rmapiBin,
+              args,
+              { timeout: RMAPI_TIMEOUT_MS, maxBuffer: 10 * 1024 * 1024 },
+              (err, stdout, stderr) => {
+                if (err === null) {
+                  resolve({ code: 0, stdout, stderr });
+                  return;
+                }
+                const code = typeof err.code === 'number' ? err.code : 1;
+                resolve({ code, stdout, stderr: stderr === '' ? err.message : stderr });
+              },
+            );
+          }),
+        log,
+      }),
       version: appVersion(),
     }),
   });

@@ -24,6 +24,7 @@ import { type Promoter, PromotionError } from '../promotion/pipeline.js';
 import type { SessionManager } from '../session/manager.js';
 import type { JobStatus, JobSubmit } from '../types.js';
 import { DeliverError, type Deliverer } from './deliver.js';
+import { RemarkableError, type RemarkablePusher } from './remarkable.js';
 import { AttachmentError } from './send.js';
 import { readRawBody, respond } from './server.js';
 
@@ -38,6 +39,8 @@ export interface ApiDeps {
   deliver: Deliverer;
   /** Stage 11 (additive on control-api v1): POST /api/v1/promote. */
   promote: Promoter;
+  /** Stage 19 (additive on control-api v1): POST /api/v1/remarkable. */
+  remarkable: RemarkablePusher;
   version: string;
 }
 
@@ -59,7 +62,7 @@ function tokenMatches(header: string | undefined, expected: string): boolean {
 }
 
 export function createApiHandler(deps: ApiDeps): ApiHandler {
-  const { config, log, jobs, sessions, deliver, promote, version } = deps;
+  const { config, log, jobs, sessions, deliver, promote, remarkable, version } = deps;
   const startedAt = Date.now();
 
   /** Parse a POST body as JSON; an empty body is {} (rotate takes no required fields). */
@@ -243,6 +246,38 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
       return;
     }
 
+    // POST /api/v1/remarkable — body { path } (Stage 19, additive on the
+    // frozen control-api v1 surface). Own kill-switch behind the two control
+    // gates: NIGHTSHIFT_REMARKABLE_ENABLED not "true" → 403 (dark by default),
+    // so with the flag off this route is byte-for-byte a disabled 403 and no
+    // capability is reachable. Path confinement lives in the pusher (its
+    // DeliverError maps to 400); a non-zero rmapi exit → RemarkableError (502)
+    // in the catch below.
+    if (method === 'POST' && path === '/api/v1/remarkable') {
+      if (!config.remarkableEnabled) {
+        respond(res, 403, {
+          ok: false,
+          error: 'reMarkable push is disabled (set NIGHTSHIFT_REMARKABLE_ENABLED=true to enable)',
+        });
+        return;
+      }
+      let body: unknown;
+      try {
+        body = await readJsonBody(req);
+      } catch {
+        respond(res, 400, { ok: false, error: 'invalid JSON body' });
+        return;
+      }
+      const { path: filePath } = body as { path?: unknown };
+      if (typeof filePath !== 'string' || filePath === '') {
+        respond(res, 400, { ok: false, error: 'remarkable requires "path" (non-empty string)' });
+        return;
+      }
+      const pushed = await remarkable.push(filePath);
+      respond(res, 200, { ok: true, pushed });
+      return;
+    }
+
     // POST /api/v1/session/rotate — body { reason?: 'manual' }
     if (method === 'POST' && path === '/api/v1/session/rotate') {
       let body: unknown;
@@ -296,6 +331,12 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
         // Rejected promote input: escaping/missing path, unrecognized content,
         // underivable slug, or an already-running slug.
         respond(res, 400, { ok: false, error: err.message });
+        return;
+      }
+      if (err instanceof RemarkableError) {
+        // reMarkable push refused (feature dark) or the rmapi/cloud transport
+        // failed (non-zero exit).
+        respond(res, err.status, { ok: false, error: err.message });
         return;
       }
       if (err instanceof AttachmentError) {

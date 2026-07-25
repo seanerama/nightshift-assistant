@@ -81,6 +81,9 @@ export function makeConfig(overrides: Partial<Config> = {}): Config {
       websiteRepo: '', // site-promotion tests point this at a fixture repo
       bunPath: 'bun', // never invoked unless a test wires the bun stub
     },
+    remarkableEnabled: false, // Stage 19 ships dark; remarkable tests flip it on
+    remarkableFolder: '/Inbox',
+    rmapiBin: 'rmapi', // never invoked unless a test wires the rmapi stub
     ...overrides,
   };
 }
@@ -560,6 +563,34 @@ export function makeBunStub(dir: string): { bunPath: string; invocations(): stri
   writeFileSync(bunPath, script, { mode: 0o755 });
   return {
     bunPath,
+    invocations(): string[] {
+      if (!existsSync(logPath)) return [];
+      return readFileSync(logPath, 'utf8').trim().split('\n').filter(Boolean);
+    },
+  };
+}
+
+// ── Stage 19 reMarkable-push fixture ────────────────────────────────────────
+
+/**
+ * The rmapi SEAM for the route tests (never a real rmapi / cloud upload): a
+ * stub executable that logs every invocation and exits 0. Control file:
+ *   <dir>/rmapi-fail → the next `rmapi put` exits 1 (transport-failure test).
+ * The unit tests inject `run` directly and never touch this.
+ */
+export function makeRmapiStub(dir: string): { rmapiBin: string; invocations(): string[] } {
+  const rmapiBin = join(dir, 'rmapi-stub');
+  const logPath = join(dir, 'rmapi-invocations.log');
+  const script = [
+    '#!/bin/sh',
+    `echo "rmapi $*" >> "${logPath}"`,
+    `if [ -e "${join(dir, 'rmapi-fail')}" ]; then echo "injected rmapi failure" >&2; exit 1; fi`,
+    'exit 0',
+    '',
+  ].join('\n');
+  writeFileSync(rmapiBin, script, { mode: 0o755 });
+  return {
+    rmapiBin,
     invocations(): string[] {
       if (!existsSync(logPath)) return [];
       return readFileSync(logPath, 'utf8').trim().split('\n').filter(Boolean);

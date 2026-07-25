@@ -144,6 +144,20 @@ export interface Config {
   promoteEnabled: boolean;
   /** Promotion infra (contracts/promotion.md "Consumes") — daemon-only creds. */
   promote: PromoteConfig;
+  /**
+   * Master switch for reMarkable PUSH (Stage 19). Default OFF — with it unset,
+   * POST /api/v1/remarkable and `nightshift remarkable` refuse (403), and the
+   * session preamble omits the remarkable line. The "assistant → tablet" bridge.
+   */
+  remarkableEnabled: boolean;
+  /** Destination folder on the tablet for pushed docs (default /Inbox). */
+  remarkableFolder: string;
+  /**
+   * Path to the rmapi binary on the host (default "rmapi"). rmapi + its config
+   * (the reMarkable device token) are a daemon-only host secret provisioned at
+   * deploy — never in workerEnv, never in git. This is just the binary path.
+   */
+  rmapiBin: string;
 }
 
 export class ConfigError extends Error {}
@@ -391,6 +405,31 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
         : env.NIGHTSHIFT_BUN_PATH,
   };
 
+  // reMarkable PUSH kill-switch (Stage 19): same discipline as the other
+  // feature flags — only exactly "true" enables; "false"/unset stay dark;
+  // anything else fails fast.
+  const remarkableRaw = env.NIGHTSHIFT_REMARKABLE_ENABLED;
+  if (
+    remarkableRaw !== undefined &&
+    remarkableRaw !== '' &&
+    remarkableRaw !== 'true' &&
+    remarkableRaw !== 'false'
+  ) {
+    throw new ConfigError(
+      `NIGHTSHIFT_REMARKABLE_ENABLED must be "true" or "false" (got: ${remarkableRaw})`,
+    );
+  }
+  const remarkableEnabled = remarkableRaw === 'true';
+
+  // '' is treated as unset (matching the other optional vars) → default /Inbox.
+  const remarkableFolder =
+    env.NIGHTSHIFT_REMARKABLE_FOLDER === undefined || env.NIGHTSHIFT_REMARKABLE_FOLDER === ''
+      ? '/Inbox'
+      : env.NIGHTSHIFT_REMARKABLE_FOLDER;
+
+  // '' is treated as unset → default rmapi (resolved on the daemon's PATH).
+  const rmapiBin = env.RMAPI_BIN === undefined || env.RMAPI_BIN === '' ? 'rmapi' : env.RMAPI_BIN;
+
   return {
     webexBotToken,
     webexWebhookSecret,
@@ -417,5 +456,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     autoAttachMaxMb,
     promoteEnabled,
     promote,
+    remarkableEnabled,
+    remarkableFolder,
+    rmapiBin,
   };
 }

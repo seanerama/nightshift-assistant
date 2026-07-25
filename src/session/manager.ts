@@ -100,6 +100,14 @@ export const PROMOTE_PREAMBLE = [
   '  Execution runs in the background and takes minutes; the result arrives on its own as a 🚀 notice — do not poll.',
 ].join('\n');
 
+/**
+ * reMarkable preamble (Stage 19): appended (after the control preamble) only
+ * when BOTH the control surface and NIGHTSHIFT_REMARKABLE_ENABLED are on. One
+ * line — the "assistant → tablet" bridge.
+ */
+export const REMARKABLE_PREAMBLE =
+  "- `nightshift remarkable <path>` — push a document to the owner's reMarkable tablet (lands in /Inbox via the reMarkable cloud; it syncs to the tablet on its next sync). Allowed roots: ~/projects and the app's jobs/ + logs/ dirs. Use it when the owner asks to send a doc/PDF to their reMarkable.";
+
 interface AgentResult {
   ok: boolean;
   text: string;
@@ -433,6 +441,7 @@ export function createSessionManager(
       const parts: string[] = [];
       if (config.controlEnabled) parts.push(CONTROL_PREAMBLE);
       if (config.controlEnabled && config.promoteEnabled) parts.push(PROMOTE_PREAMBLE);
+      if (config.controlEnabled && config.remarkableEnabled) parts.push(REMARKABLE_PREAMBLE);
       if (config.controlEnabled && config.typesEnabled) parts.push(jobTypesPreamble());
       if (config.rotationEnabled) {
         const seed = buildSeed(appDir, config.seedMaxBytes);

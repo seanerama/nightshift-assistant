@@ -31,6 +31,7 @@ import {
   createSessionManager,
   NIGHTSHIFT_TOOL_RULE,
   PROMOTE_PREAMBLE,
+  REMARKABLE_PREAMBLE,
   type SessionManager,
 } from '../src/session/manager.js';
 import type { InboundMessage } from '../src/types.js';
@@ -200,6 +201,31 @@ describe('control-enabled session spawn (Stage 5 gating)', () => {
     const prompt = call?.args[seedIdx + 1] ?? '';
     expect(prompt).toContain(CONTROL_PREAMBLE);
     expect(prompt).not.toContain('nightshift promote');
+  });
+
+  it('adds the remarkable line only when NIGHTSHIFT_REMARKABLE_ENABLED is on (Stage 19)', async () => {
+    const mgr = makeManager({ remarkableEnabled: true });
+    await mgr.relay(inbound('hello'));
+
+    const [call] = invocations();
+    const seedIdx = call?.args.indexOf('--append-system-prompt') ?? -1;
+    const prompt = call?.args[seedIdx + 1] ?? '';
+    expect(prompt).toContain(CONTROL_PREAMBLE);
+    expect(prompt).toContain(REMARKABLE_PREAMBLE);
+    expect(prompt).toContain('nightshift remarkable');
+    expect(prompt).toContain('/Inbox');
+    expect(prompt.indexOf(CONTROL_PREAMBLE)).toBeLessThan(prompt.indexOf(REMARKABLE_PREAMBLE));
+  });
+
+  it('omits the remarkable line while the reMarkable kill-switch is OFF (dark by default)', async () => {
+    const mgr = makeManager(); // remarkableEnabled stays false
+    await mgr.relay(inbound('hello'));
+
+    const [call] = invocations();
+    const seedIdx = call?.args.indexOf('--append-system-prompt') ?? -1;
+    const prompt = call?.args[seedIdx + 1] ?? '';
+    expect(prompt).toContain(CONTROL_PREAMBLE);
+    expect(prompt).not.toContain('nightshift remarkable');
   });
 
   it('omits the type list while the registry kill-switch is OFF', async () => {
