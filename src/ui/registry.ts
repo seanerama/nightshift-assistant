@@ -1,5 +1,5 @@
 /**
- * UI registry (contracts/generative-ui.md, ADR 0015, Stage 31): the SQLite
+ * UI registry (contracts/generative-ui.md, ADR 0015, Stages 31–32): the SQLite
  * home of generated single-file resource pages — tables ui_resources +
  * ui_grants (migration 0009). Owns validation-before-write (there is NO
  * unvalidated insert path), the name rule, version assignment, and the
@@ -70,14 +70,27 @@ export interface UiRegistry {
   /** Dry-run validation (POST /api/v1/ui/validate) — never writes. */
   validate(html: string): UiVerdict;
   /**
-   * Validate → insert as version 1, active, atomically. Throws
-   * UiRegistryError (422) on a bad name, unknown requested tool, failed
-   * validation, or a name that is already registered (next-version install
-   * is Stage 32 scope) — and then NOTHING is written.
+   * Validate → insert as MAX(version)+1 (1 for a new name), active, and
+   * demote the previously active row — one transaction, so exactly one
+   * active row per name at every commit point (Stage 32, ADR 0015). Throws
+   * UiRegistryError (422) on a bad name, unknown requested tool, or failed
+   * validation — and then NOTHING is written: a failed install against an
+   * existing name leaves the active pointer and version count untouched.
    */
   install(input: UiInstallInput): UiResourceRecord;
   /** The queryable registry: active version per name, html omitted. */
   list(): UiResourceRecord[];
+  /** ALL versions of one name (ascending), html omitted; [] for an unknown name. */
+  versions(name: string): UiResourceRecord[];
+  /** One exact version WITH html; null when the name/version is unregistered. */
+  get(name: string, version: number): UiResourceRecord | null;
+  /**
+   * Flip the active pointer to an already-registered version (rollback =
+   * re-activation, never deletion — versions are immutable). Atomic:
+   * demote-then-promote in one transaction. Returns the newly active record
+   * (html omitted) or null when the name/version is unregistered (→ 404).
+   */
+  activate(name: string, version: number): UiResourceRecord | null;
   /** Resolve an exact ui://nightshift/<name>@v<N> uri (active or not), WITH html. */
   getByUri(uri: string): UiResourceRecord | null;
 }
@@ -130,24 +143,24 @@ const ROW_COLUMNS =
 export function createUiRegistry(db: Database.Database): UiRegistry {
   const install = db.transaction(
     (name: string, html: string, requestedTools: string[], provenance: string): UiResourceRow => {
+      // Stage 32 (ADR 0015): installing under an existing name assigns the
+      // next version and makes it active — MAX(version)+1 → insert → demote
+      // every other row of the name, all inside THIS transaction, so exactly
+      // one active row per name is true at every commit point. Versions are
+      // never deleted or edited: a change is the next version.
       const head = db
         .prepare('SELECT MAX(version) AS v FROM ui_resources WHERE name = ?')
         .get(name) as { v: number | null };
-      // Stage 31 registers NEW names only — next-version install (and the
-      // demote-then-insert active handover) is Stage 32 scope. Refusing here
-      // keeps the UNIQUE(name, version) invariant trivially unbreakable.
-      if (head.v !== null) {
-        throw new UiRegistryError(
-          `resource "${name}" is already registered (v${head.v}); ` +
-            'installing a new version lands in Stage 32 — nothing was written',
-        );
-      }
-      const version = 1;
+      const version = (head.v ?? 0) + 1;
       const createdAt = new Date().toISOString();
       db.prepare(
         `INSERT INTO ui_resources (name, version, html, requested_tools, provenance, created_at, active)
          VALUES (?, ?, ?, ?, ?, ?, 1)`,
       ).run(name, version, html, JSON.stringify(requestedTools), provenance, createdAt);
+      db.prepare('UPDATE ui_resources SET active = 0 WHERE name = ? AND version <> ?').run(
+        name,
+        version,
+      );
       return {
         name,
         version,
@@ -159,6 +172,22 @@ export function createUiRegistry(db: Database.Database): UiRegistry {
       };
     },
   );
+
+  const activate = db.transaction((name: string, version: number): UiResourceRow | null => {
+    const target = db
+      .prepare(`SELECT ${ROW_COLUMNS} FROM ui_resources WHERE name = ? AND version = ?`)
+      .get(name, version) as UiResourceRow | undefined;
+    if (target === undefined) return null; // unknown name/version → 404 at the door
+    db.prepare('UPDATE ui_resources SET active = 0 WHERE name = ? AND version <> ?').run(
+      name,
+      version,
+    );
+    db.prepare('UPDATE ui_resources SET active = 1 WHERE name = ? AND version = ?').run(
+      name,
+      version,
+    );
+    return { ...target, active: 1 };
+  });
 
   return {
     validate(html: string): UiVerdict {
@@ -200,6 +229,25 @@ export function createUiRegistry(db: Database.Database): UiRegistry {
         .prepare(`SELECT ${ROW_COLUMNS} FROM ui_resources WHERE active = 1 ORDER BY name`)
         .all() as UiResourceRow[];
       return rows.map(toRecord);
+    },
+
+    versions(name: string): UiResourceRecord[] {
+      const rows = db
+        .prepare(`SELECT ${ROW_COLUMNS} FROM ui_resources WHERE name = ? ORDER BY version`)
+        .all(name) as UiResourceRow[];
+      return rows.map(toRecord);
+    },
+
+    get(name: string, version: number): UiResourceRecord | null {
+      const row = db
+        .prepare(`SELECT ${ROW_COLUMNS}, html FROM ui_resources WHERE name = ? AND version = ?`)
+        .get(name, version) as UiResourceRow | undefined;
+      return row === undefined ? null : toRecord(row);
+    },
+
+    activate(name: string, version: number): UiResourceRecord | null {
+      const row = activate(name, version);
+      return row === null ? null : toRecord(row);
     },
 
     getByUri(uri: string): UiResourceRecord | null {
