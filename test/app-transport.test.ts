@@ -1,11 +1,12 @@
 /**
  * Stage 24 app transport (contracts/app-ingress.md v1, pinned to
  * agent-app-contract#v1.0.0; ADR 0009–0011): bearer auth with 401-before-404,
- * health + manifest (capabilities exactly ["chat"]), the chat triad (202
- * before relay, durable dedup across restart, SSE Last-Event-ID resume ==
- * ?after=), migration 0007, and the dark-flag / fail-closed startup wiring.
- * The CI conformance job is the contract test; these are the seams it cannot
- * reach (restart durability, hanging relay, flag-off absence).
+ * health + manifest (capabilities exactly ["chat","files"] since Stage 26),
+ * the chat triad (202 before relay, durable dedup across restart, SSE
+ * Last-Event-ID resume == ?after=), the migration ladder, and the dark-flag /
+ * fail-closed startup wiring. The CI conformance job is the contract test;
+ * these are the seams it cannot reach (restart durability, hanging relay,
+ * flag-off absence). Stage 26 file specifics live in app-files.test.ts.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -15,7 +16,9 @@ import { join } from 'node:path';
 import type Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../src/app.js';
+import type { Config } from '../src/config.js';
 import { migrate, openDatabase } from '../src/db/migrate.js';
+import { type AppFiles, createAppFiles } from '../src/transport/app/files.js';
 import { type AppEvent, type AppOutbox, createAppOutbox } from '../src/transport/app/outbox.js';
 import { type AppTransport, createAppTransport } from '../src/transport/app/server.js';
 import type { AssistantReply, InboundMessage } from '../src/types.js';
@@ -46,6 +49,9 @@ interface Harness {
   db: Database.Database;
   log: TestLogger;
   outbox: AppOutbox;
+  files: AppFiles;
+  /** The registry's uploads/ dir (temp; removed on close). */
+  uploadsDir: string;
   transport: AppTransport;
   port: number;
   relayCalls: InboundMessage[];
@@ -55,17 +61,27 @@ interface Harness {
 async function startTransport(
   relay: (msg: InboundMessage) => Promise<AssistantReply> = echoRelay,
   db?: Database.Database,
+  overrides: Partial<Config> = {},
 ): Promise<Harness> {
   const database = db ?? openDatabase(':memory:');
   migrate(database, MIGRATIONS_DIR);
   const log = makeTestLogger();
-  const config = makeConfig({ appTransportEnabled: true, appToken: TOKEN, appPort: 0 });
+  const config = makeConfig({
+    appTransportEnabled: true,
+    appToken: TOKEN,
+    appPort: 0,
+    ...overrides,
+  });
   const outbox = createAppOutbox(database, log);
+  const tempDir = mkdtempSync(join(tmpdir(), 'nightshift-appt-'));
+  const uploadsDir = join(tempDir, 'uploads');
+  const files = createAppFiles(database, log, { uploadsDir, roots: [uploadsDir] });
   const relayCalls: InboundMessage[] = [];
   const transport = createAppTransport({
     config,
     log,
     outbox,
+    files,
     relay: (msg) => {
       relayCalls.push(msg);
       return relay(msg);
@@ -77,12 +93,15 @@ async function startTransport(
     db: database,
     log,
     outbox,
+    files,
+    uploadsDir,
     transport,
     port,
     relayCalls,
     async close(): Promise<void> {
       await transport.close();
       database.close();
+      rmSync(tempDir, { recursive: true, force: true });
     },
   };
 }
@@ -195,15 +214,17 @@ describe('app transport auth (ADR 0011: 401 precedes 404)', () => {
     expect(await res.json()).toEqual({ ok: false, error: 'not found' });
   });
 
-  it('404s the capability-gated routes (files/mcp undeclared) with a valid token', async () => {
-    for (const [method, path] of [
-      ['POST', '/app/v1/uploads'],
-      ['GET', '/app/v1/files/nope'],
-      ['POST', '/app/v1/mcp'],
-    ] as const) {
-      const res = await request(h.port, path, { token: TOKEN, method });
-      expect(res.status).toBe(404);
-    }
+  it('404s the still-undeclared MCP route with a valid token; files routes now answer', async () => {
+    // mcp-tools / mcp-apps-ui stay undeclared (Stages 27–28) → 404.
+    const mcp = await request(h.port, '/app/v1/mcp', { token: TOKEN, method: 'POST' });
+    expect(mcp.status).toBe(404);
+    // The files routes are DECLARED since Stage 26: they answer (with their
+    // own errors here — no multipart body / unknown id), never a gating 404
+    // that would make the manifest a lie in the other direction.
+    const uploads = await request(h.port, '/app/v1/uploads', { token: TOKEN, method: 'POST' });
+    expect(uploads.status).toBe(400);
+    const download = await request(h.port, '/app/v1/files/not-a-real-id', { token: TOKEN });
+    expect(download.status).toBe(404); // unknown id — the mapping, not gating
   });
 });
 
@@ -225,14 +246,14 @@ describe('health + manifest', () => {
     expect(body.uptimeSec).toBeGreaterThanOrEqual(0);
   });
 
-  it('declares capabilities EXACTLY ["chat"] — served for real, nothing unserved', async () => {
+  it('declares capabilities EXACTLY ["chat","files"] — served for real, nothing unserved', async () => {
     const res = await request(h.port, '/app/v1/manifest', { token: TOKEN });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
       schema: 1,
       agent: { name: 'nightshift-assistant', version: '0.0.0-test' },
       contract: { name: 'app-ingress', version: 1 },
-      capabilities: ['chat'],
+      capabilities: ['chat', 'files'],
     });
   });
 });
@@ -478,7 +499,7 @@ describe('outbox durability (ADR 0010: row committed before any live emit)', () 
   });
 });
 
-describe('migration 0007_app_outbox', () => {
+describe('migrations 0007_app_outbox + 0008_app_files', () => {
   it('applies on a fresh DB (idempotently) with the ADR 0010 schema', () => {
     const db = openDatabase(':memory:');
     migrate(db, MIGRATIONS_DIR);
@@ -498,8 +519,11 @@ describe('migration 0007_app_outbox', () => {
     ]);
     expect(cols.find((c) => c.name === 'id')?.pk).toBe(1);
     expect(cols.find((c) => c.name === 'delivered_at')?.notnull).toBe(0); // nullable
+    // 0008 (Stage 26): the durable id→path mapping behind /uploads + /files.
+    const fileCols = db.prepare('PRAGMA table_info(app_files)').all() as Array<{ name: string }>;
+    expect(fileCols.map((c) => c.name)).toEqual(['id', 'path', 'created_at']);
     const head = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(head.v).toBe(7);
+    expect(head.v).toBe(8);
     db.close();
   });
 
@@ -524,13 +548,17 @@ describe('migration 0007_app_outbox', () => {
       const after = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as {
         v: number;
       };
-      expect(after.v).toBe(7);
+      expect(after.v).toBe(8);
       const tablesAfter = db
         .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
         .all() as Array<{ name: string }>;
-      // Exactly one new table; every pre-existing one untouched.
+      // Exactly the two new app-transport tables; every pre-existing one untouched.
       expect(tablesAfter.map((t) => t.name)).toEqual(
-        [...(tablesBefore as Array<{ name: string }>).map((t) => t.name), 'app_outbox'].sort(),
+        [
+          ...(tablesBefore as Array<{ name: string }>).map((t) => t.name),
+          'app_outbox',
+          'app_files',
+        ].sort(),
       );
       db.close();
     } finally {
@@ -603,7 +631,7 @@ describe('createApp wiring (dark flag + fail-closed startup)', () => {
       });
       expect(res.status).toBe(200);
       const manifest = (await res.json()) as { capabilities: string[] };
-      expect(manifest.capabilities).toEqual(['chat']);
+      expect(manifest.capabilities).toEqual(['chat', 'files']);
     } finally {
       await app.close();
     }
