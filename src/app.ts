@@ -27,6 +27,7 @@ import {
 import { createApiHandler } from './transport/api.js';
 import { type AppSink, createNotifyFanout } from './transport/app/fanout.js';
 import { createAppFiles } from './transport/app/files.js';
+import { createAppMcp } from './transport/app/mcp.js';
 import { createAppOutbox } from './transport/app/outbox.js';
 import { type AppTransport, createAppTransport } from './transport/app/server.js';
 import { createDeliverer } from './transport/deliver.js';
@@ -293,6 +294,9 @@ export function createApp(
           log,
           outbox: appSink.outbox,
           files: appSink.files,
+          // MCP bridge (Stage 27, ADR 0012): the five tools are thin doors
+          // over the SAME jobs/sessions handles the control API above uses.
+          mcp: createAppMcp({ config, log, jobs, sessions, version: appVersion() }),
           relay: (msg) => sessions.relay(msg),
           version: appVersion(),
         });

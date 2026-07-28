@@ -6,8 +6,12 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type Database from 'better-sqlite3';
 import type { Config } from '../src/config.js';
+import { createJobRunner } from '../src/jobs/runner.js';
 import type { Logger } from '../src/log.js';
+import type { SessionManager } from '../src/session/manager.js';
+import { type AppMcp, createAppMcp } from '../src/transport/app/mcp.js';
 
 export const AGENT_STUB = fileURLToPath(new URL('./fixtures/agent-stub.cjs', import.meta.url));
 export const WORKER_STUB = fileURLToPath(new URL('./fixtures/worker-stub.cjs', import.meta.url));
@@ -91,6 +95,43 @@ export function makeConfig(overrides: Partial<Config> = {}): Config {
     appPort: 0, // ephemeral
     ...overrides,
   };
+}
+
+/**
+ * Stage 27: an MCP bridge for transport-LEVEL tests (createAppTransport built
+ * directly, no createApp) — a real job runner over the migrated test DB plus a
+ * canned SessionManager. Tool behavior against the real internals is covered
+ * in app-mcp.test.ts; this exists so the transport harnesses can satisfy the
+ * mcp dep without dragging in a live session manager.
+ */
+export function makeAppMcp(db: Database.Database, log: Logger, config: Config): AppMcp {
+  const sessions: SessionManager = {
+    relay: async () => ({
+      schema: 1,
+      text: 'stub',
+      files: [],
+      sessionId: 'sess-stub',
+      rotated: false,
+    }),
+    rotate: async (reason) => ({
+      schema: 1,
+      closedSessionId: 'sess-stub',
+      newSessionId: 'sess-stub-2',
+      reason,
+      summaryPath: '',
+      transcriptPath: '',
+      rotatedAt: new Date().toISOString(),
+    }),
+    maybeRotateDaily: async () => false,
+    info: () => ({ id: null, turns: 0 }),
+  };
+  return createAppMcp({
+    config,
+    log,
+    jobs: createJobRunner(db, log, config),
+    sessions,
+    version: '0.0.0-test',
+  });
 }
 
 export function sign(body: string, secret: string): string {

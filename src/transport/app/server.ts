@@ -25,6 +25,13 @@
  * resolve to absolute local paths before relay() — the session cannot tell
  * which door a file came through — and the reply event echoes the message's
  * attachment ids plus fresh ids for any confined relay-produced files.
+ *
+ * MCP (Stage 27, ADR 0012): POST /mcp is delegated to the AppMcp bridge —
+ * five thin tools over the same App.jobs/App.sessions doors the control API
+ * uses. Mounted INSIDE this dispatch, so bearer auth (401 first), the flag,
+ * and the containment posture all apply unchanged. POST-only per the
+ * contract; GET/DELETE answer 405 (a streamable-HTTP client reads that as
+ * "no standalone SSE / no session termination", per the MCP spec).
  */
 
 import { createHash, timingSafeEqual } from 'node:crypto';
@@ -35,6 +42,7 @@ import type { Logger } from '../../log.js';
 import type { AssistantReply, InboundMessage } from '../../types.js';
 import { readRawBody, respond } from '../server.js';
 import type { AppFiles } from './files.js';
+import type { AppMcp } from './mcp.js';
 import type { AppEvent, AppOutbox } from './outbox.js';
 
 /** SSE comment keep-alive cadence — frequent enough for phone NATs, cheap enough to ignore. */
@@ -45,10 +53,11 @@ const AGENT_NAME = 'nightshift-assistant';
 /**
  * Declaring is BINDING (ADR 0009): "chat" is the schema-mandated floor
  * (Stage 24); "files" landed with Stage 26's upload→attach→retrieve loop
- * harness-green. mcp-tools / mcp-apps-ui are added ONLY when their stage's
- * checks pass (Stages 27–28); declaring earlier makes the manifest a lie.
+ * harness-green; "mcp-tools" landed with Stage 27's five thin doors (harness
+ * mcp.initialize + mcp.tools green). mcp-apps-ui is added ONLY when Stage 28's
+ * checks pass; declaring earlier makes the manifest a lie.
  */
-const CAPABILITIES: readonly string[] = ['chat', 'files'];
+const CAPABILITIES: readonly string[] = ['chat', 'files', 'mcp-tools'];
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -63,6 +72,8 @@ export interface AppTransportDeps {
   outbox: AppOutbox;
   /** The durable id→path registry behind /uploads and /files (Stage 26). */
   files: AppFiles;
+  /** The MCP bridge behind POST /mcp (Stage 27, ADR 0012). */
+  mcp: AppMcp;
   /** The frozen seam (contracts/assistant-session.md) — consumed as-is, off the request path. */
   relay(msg: InboundMessage): Promise<AssistantReply>;
   version: string;
@@ -220,7 +231,7 @@ function firstFilePart(
 }
 
 export function createAppTransport(deps: AppTransportDeps): AppTransport {
-  const { config, log, outbox, files, relay, version } = deps;
+  const { config, log, outbox, files, mcp, relay, version } = deps;
   const startedAt = Date.now();
   let boundPort: number | null = null;
 
@@ -515,8 +526,23 @@ export function createAppTransport(deps: AppTransportDeps): AppTransport {
       handleFileDownload(safeDecode(path.slice('/app/v1/files/'.length)), res);
       return;
     }
-    // Includes /mcp: neither MCP capability is declared (Stages 27–28), so it
-    // 404s — correct gating, not a stub.
+    if (path === '/app/v1/mcp') {
+      if (method === 'POST') {
+        // Same async containment posture as /messages and /uploads: a bridge
+        // failure answers the error shape and never escapes the dispatch.
+        mcp.handle(req, res).catch((err: unknown) => {
+          log.error('app mcp handler error', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+          if (!res.headersSent) sendError(res, 500, 'internal error');
+        });
+        return;
+      }
+      // The contract exposes POST only; 405 tells a streamable-HTTP client
+      // "no standalone SSE stream, no session DELETE" (MCP spec behavior).
+      sendError(res, 405, 'method not allowed (POST only)');
+      return;
+    }
     sendError(res, 404, 'not found');
   }
 

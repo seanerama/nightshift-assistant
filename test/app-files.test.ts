@@ -28,7 +28,13 @@ import { type AppFiles, createAppFiles, sanitizeFilename } from '../src/transpor
 import { type AppEvent, type AppOutbox, createAppOutbox } from '../src/transport/app/outbox.js';
 import { type AppTransport, createAppTransport } from '../src/transport/app/server.js';
 import type { AssistantReply, InboundMessage } from '../src/types.js';
-import { MIGRATIONS_DIR, makeConfig, makeTestLogger, type TestLogger } from './helpers.js';
+import {
+  MIGRATIONS_DIR,
+  makeAppMcp,
+  makeConfig,
+  makeTestLogger,
+  type TestLogger,
+} from './helpers.js';
 
 const TOKEN = 'test-app-token';
 
@@ -74,6 +80,7 @@ async function start(
     log,
     outbox,
     files,
+    mcp: makeAppMcp(database, log, config),
     relay: (msg) => {
       relayCalls.push(msg);
       return relay(msg);
