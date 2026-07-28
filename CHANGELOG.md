@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.14.0
+
+### Other
+- [stage 35] Generative UI authoring flow: session preamble wired, phone DoD certification script (#80)
+- [stage 34] Generative UI list_changed: GET /app/v1/mcp notification stream over registry mutations (#79)
+- [stage 33] Generative UI zero-trust grants: ui grant/revoke, durable approvals, _meta intersection (#78)
+- [stage 32] Generative UI versions & rollback: next-version install, ui show/activate, read any @vN (#77)
+- [stage 31] Generative UI walking skeleton: flag, registry, validator, ui validate/install/list, MCP listing (#76)
+- ops: owner Stage-0 exit DONE — phone chat + jobs_submit/jobs_kill via the jobs dashboard (job a3d4ef7e running→killed); Webex inbound smoke still pending
+- ops: v0.13.0 live — app transport enabled on tailnet :3779; live cert PARTIAL (harness 21/23, upstream 10s reply window → agent-app-contract#13); owner smokes pending
+
+## 0.13.0
+
+### Other
+- [stage 29] App transport deploy dark and certify live on the tailnet (#70)
+- [stage 28] App UI resource: jobs dashboard ui-nightshift-jobs-v1 per ui-bridge (#69)
+- [stage 27] App MCP tools: streamable HTTP, five thin doors over control internals (#68)
+- [stage 26] App files: multipart uploads in, AssistantReply files out (#67)
+- [stage 24] App transport walking skeleton: module, outbox migration, auth, manifest, CI harness gate (#66)
+- ops: v0.12.2 live — stage-23 URL HANDLING deployed, session rotated, seed audited (Webex smoke pending owner)
+
 ## 0.12.2
 
 ### Other
