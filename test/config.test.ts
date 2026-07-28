@@ -356,4 +356,37 @@ describe('loadConfig', () => {
     expect(config.agentBin).toBe('/tmp/stub');
     expect(config.port).toBe(4000);
   });
+
+  it('app transport (Stage 24): dark by default, flag discipline, token NOT startup-required', () => {
+    const dark = loadConfig({ ...FULL_ENV });
+    expect(dark.appTransportEnabled).toBe(false);
+    expect(dark.appToken).toBe('');
+    expect(dark.appBind).toEqual(['127.0.0.1']);
+    expect(dark.appPort).toBe(3778);
+    expect(() => loadConfig({ ...FULL_ENV, APP_TRANSPORT_ENABLED: 'yes' })).toThrow(ConfigError);
+    // Flag on with the token UNSET must load fine — the daemon stays healthy
+    // and app.ts refuses the app LISTENER only (fail closed there, not here).
+    const on = loadConfig({ ...FULL_ENV, APP_TRANSPORT_ENABLED: 'true' });
+    expect(on.appTransportEnabled).toBe(true);
+    expect(on.appToken).toBe('');
+  });
+
+  it('app transport bind: comma-separated list honored; all-interfaces refused (ADR 0011)', () => {
+    const multi = loadConfig({
+      ...FULL_ENV,
+      NIGHTSHIFT_APP_BIND: '127.0.0.1, 100.64.0.7',
+      NIGHTSHIFT_APP_PORT: '3900',
+    });
+    expect(multi.appBind).toEqual(['127.0.0.1', '100.64.0.7']);
+    expect(multi.appPort).toBe(3900);
+    for (const addr of ['0.0.0.0', '::', '[::]', '127.0.0.1,0.0.0.0']) {
+      expect(() => loadConfig({ ...FULL_ENV, NIGHTSHIFT_APP_BIND: addr })).toThrow(
+        /all-interfaces/,
+      );
+    }
+    expect(() => loadConfig({ ...FULL_ENV, NIGHTSHIFT_APP_BIND: ' , ' })).toThrow(ConfigError);
+    expect(() => loadConfig({ ...FULL_ENV, NIGHTSHIFT_APP_PORT: 'nope' })).toThrow(
+      /NIGHTSHIFT_APP_PORT/,
+    );
+  });
 });

@@ -25,6 +25,9 @@ import {
   type SessionManagerHooks,
 } from './session/manager.js';
 import { createApiHandler } from './transport/api.js';
+import { createNotifyFanout } from './transport/app/fanout.js';
+import { type AppOutbox, createAppOutbox } from './transport/app/outbox.js';
+import { type AppTransport, createAppTransport } from './transport/app/server.js';
 import { createDeliverer } from './transport/deliver.js';
 import { createRemarkablePusher } from './transport/remarkable.js';
 import { AttachmentError, createSender } from './transport/send.js';
@@ -52,6 +55,13 @@ export interface App {
   sessions: SessionManager;
   /** Job runner (Stage 4) — operator/assistant-exposed via /api/v1/jobs* (Stage 5). */
   jobs: JobRunner;
+  /**
+   * App transport (Stage 24, contracts/app-ingress.md) — its own server on
+   * NIGHTSHIFT_APP_BIND/PORT. null when APP_TRANSPORT_ENABLED is off OR the
+   * listener refused to start (flag on, NIGHTSHIFT_APP_TOKEN unset — fail
+   * closed, daemon otherwise healthy).
+   */
+  appTransport: AppTransport | null;
   /** Listen on 127.0.0.1 ONLY (ADR 0001: loopback bind; tunnel exposes /webhook). */
   listen(): Promise<number>;
   close(): Promise<void>;
@@ -82,6 +92,27 @@ export function createApp(
 
   const webex = createWebexClient(config);
   const sender = createSender(webex, log, config);
+
+  // App transport outbox (Stage 24, ADR 0009–0011): constructed ONLY when the
+  // app listener will actually start — flag on AND token set. Flag on with
+  // the token unset refuses the listener (fail closed, clear log) while the
+  // daemon stays healthy; flag off is fully dark (no route, no outbox rows).
+  let appOutbox: AppOutbox | null = null;
+  if (config.appTransportEnabled) {
+    if (config.appToken === '') {
+      log.error(
+        'app transport refused to start: APP_TRANSPORT_ENABLED=true but NIGHTSHIFT_APP_TOKEN is unset — ' +
+          'the app listener fails closed; the rest of the daemon runs normally',
+      );
+    } else {
+      appOutbox = createAppOutbox(db, log);
+    }
+  }
+  // Proactive notices fan out to the app outbox BESIDE Webex (ADR 0010): the
+  // Webex leg is byte-identical (same sender, same args); dark → the notifier
+  // IS the Webex sender. The webhook reply path keeps `sender` directly —
+  // conversational replies are not proactive traffic.
+  const notifier = createNotifyFanout(sender, appOutbox, log);
 
   // The owner's most recent roomId, for proactive notices (rotation, job
   // finishes) and /api/v1/deliver. Persisted in the settings table (migration
@@ -116,7 +147,7 @@ export function createApp(
         log.info('rotation notice skipped: no owner room seen yet');
         return;
       }
-      await sender.send({ roomId: lastOwnerRoomId }, text);
+      await notifier.send({ roomId: lastOwnerRoomId }, text);
     },
   });
 
@@ -139,7 +170,7 @@ export function createApp(
       ? selectAutoAttach(outputs, job.workdir, config.autoAttachMaxMb)
       : [];
     try {
-      await sender.send(dest, notice, files);
+      await notifier.send(dest, notice, files);
     } catch (err) {
       // An attachment that grew/vanished after selection must never cost the
       // notice itself — retry without files (send failures still propagate).
@@ -148,6 +179,8 @@ export function createApp(
         jobId: job.id,
         error: err.message,
       });
+      // Retry the WEBEX leg only: the fan-out already landed this notice's
+      // outbox row on the first attempt — one notice row per proactive send.
       await sender.send(dest, notice);
     }
   });
@@ -165,7 +198,7 @@ export function createApp(
       log.info('promotion notice skipped: no owner room seen yet');
       return;
     }
-    await sender.send({ roomId: lastOwnerRoomId }, text);
+    await notifier.send({ roomId: lastOwnerRoomId }, text);
   };
   const promoterDeps = { db, log, config, notify: promoteNotify };
   const subdomainPromoter = createPromoter(promoterDeps, {
@@ -241,6 +274,21 @@ export function createApp(
     }),
   });
 
+  // App transport (Stage 24, contracts/app-ingress.md): its own node:http
+  // server(s) on NIGHTSHIFT_APP_BIND/PORT — the loopback daemon server above
+  // is untouched. Constructed only when the outbox exists (flag on + token
+  // set); relay is the same frozen seam the webhook path consumes.
+  const appTransport: AppTransport | null =
+    appOutbox === null
+      ? null
+      : createAppTransport({
+          config,
+          log,
+          outbox: appOutbox,
+          relay: (msg) => sessions.relay(msg),
+          version: appVersion(),
+        });
+
   // Daily-rotation trigger: minimal in-daemon interval check (no external
   // scheduler yet). Dark unless NIGHTSHIFT_ROTATION_ENABLED=true.
   let dailyTimer: NodeJS.Timeout | null = null;
@@ -284,22 +332,29 @@ export function createApp(
     db,
     sessions,
     jobs,
-    listen(): Promise<number> {
-      return new Promise((resolve, reject) => {
+    appTransport,
+    async listen(): Promise<number> {
+      const port = await new Promise<number>((resolve, reject) => {
         server.once('error', reject);
         server.listen(config.port, '127.0.0.1', () => {
           const address = server.address();
-          const port = typeof address === 'object' && address !== null ? address.port : config.port;
-          log.info('listening', { host: '127.0.0.1', port });
-          resolve(port);
+          const bound =
+            typeof address === 'object' && address !== null ? address.port : config.port;
+          log.info('listening', { host: '127.0.0.1', port: bound });
+          resolve(bound);
         });
       });
+      // The app transport listener starts beside the daemon server (its own
+      // bind/port); null when dark or refused (fail closed) — nothing starts.
+      if (appTransport !== null) await appTransport.listen();
+      return port;
     },
-    close(): Promise<void> {
+    async close(): Promise<void> {
       // Intervals only — running workers are NOT killed on daemon shutdown;
       // the reconciler re-adopts them on restart via their persisted pids.
       if (dailyTimer !== null) clearInterval(dailyTimer);
       if (jobsTimer !== null) clearInterval(jobsTimer);
+      if (appTransport !== null) await appTransport.close();
       return new Promise((resolve, reject) => {
         server.close((err) => {
           db.close();

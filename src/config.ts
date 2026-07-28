@@ -169,6 +169,28 @@ export interface Config {
    * deploy — never in workerEnv, never in git. This is just the binary path.
    */
   rmapiBin: string;
+  /**
+   * Master switch for the app transport (Stage 24, contracts/app-ingress.md,
+   * ADR 0009). Default OFF — with it unset, the app listener never starts and
+   * no /app/v1/ route exists (absent, not 403).
+   */
+  appTransportEnabled: boolean;
+  /**
+   * Per-install bearer token required on every /app/v1/ request (ADR 0011) —
+   * distinct from NIGHTSHIFT_API_TOKEN so the phone credential rotates without
+   * touching the control plane. Deliberately NOT validated here: flag on with
+   * the token unset must leave the daemon healthy while the app LISTENER
+   * refuses to start (fail closed) — that check lives in app.ts.
+   */
+  appToken: string;
+  /**
+   * Bind addresses for the app transport's own HTTP server (ADR 0011):
+   * loopback + the tailnet interface only, comma-separated in env. Never an
+   * all-interfaces address — 0.0.0.0/:: fail fast at startup.
+   */
+  appBind: string[];
+  /** App transport listen port (default 3778 — distinct from the daemon's 3777). */
+  appPort: number;
 }
 
 export class ConfigError extends Error {}
@@ -452,6 +474,50 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   // '' is treated as unset → default rmapi (resolved on the daemon's PATH).
   const rmapiBin = env.RMAPI_BIN === undefined || env.RMAPI_BIN === '' ? 'rmapi' : env.RMAPI_BIN;
 
+  // App-transport kill-switch (Stage 24): same discipline as the other feature
+  // flags — only exactly "true" enables; "false"/unset stay dark; anything
+  // else fails fast.
+  const appRaw = env.APP_TRANSPORT_ENABLED;
+  if (appRaw !== undefined && appRaw !== '' && appRaw !== 'true' && appRaw !== 'false') {
+    throw new ConfigError(`APP_TRANSPORT_ENABLED must be "true" or "false" (got: ${appRaw})`);
+  }
+  const appTransportEnabled = appRaw === 'true';
+
+  // NOT required-when-enabled on purpose (unlike NIGHTSHIFT_API_TOKEN): the
+  // contract wants flag-on + token-unset to refuse the app LISTENER only,
+  // with the daemon otherwise healthy. app.ts owns that fail-closed check.
+  const appToken = env.NIGHTSHIFT_APP_TOKEN ?? '';
+
+  const appPort = Number.parseInt(env.NIGHTSHIFT_APP_PORT ?? '3778', 10);
+  if (!Number.isInteger(appPort) || appPort < 1 || appPort > 65535) {
+    throw new ConfigError(`NIGHTSHIFT_APP_PORT is not a valid port: ${env.NIGHTSHIFT_APP_PORT}`);
+  }
+
+  // Bind addresses (ADR 0011): loopback by default; deploy adds the tailnet
+  // IP (Stage 29). An all-interfaces bind is a config mistake that would
+  // silently expose the surface — fail fast, never listen.
+  const appBind = (
+    env.NIGHTSHIFT_APP_BIND === undefined || env.NIGHTSHIFT_APP_BIND === ''
+      ? '127.0.0.1'
+      : env.NIGHTSHIFT_APP_BIND
+  )
+    .split(',')
+    .map((addr) => addr.trim())
+    .filter((addr) => addr !== '');
+  if (appBind.length === 0) {
+    throw new ConfigError(
+      `NIGHTSHIFT_APP_BIND must name at least one address: ${env.NIGHTSHIFT_APP_BIND}`,
+    );
+  }
+  for (const addr of appBind) {
+    if (addr === '0.0.0.0' || addr === '::' || addr === '[::]') {
+      throw new ConfigError(
+        `NIGHTSHIFT_APP_BIND must never be an all-interfaces address (got: ${addr}) — ` +
+          'bind loopback + the tailnet IP only (ADR 0011)',
+      );
+    }
+  }
+
   return {
     webexBotToken,
     webexWebhookSecret,
@@ -482,5 +548,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     remarkableEnabled,
     remarkableFolder,
     rmapiBin,
+    appTransportEnabled,
+    appToken,
+    appBind,
+    appPort,
   };
 }

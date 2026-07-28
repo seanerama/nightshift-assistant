@@ -1,0 +1,33 @@
+PASS  manifest.ok  GET /manifest returns 200
+PASS  manifest.contract  Manifest declares app-ingress v1
+PASS  manifest.capabilities.chat  Manifest declares the mandatory 'chat' capability
+PASS  health.auth.401  GET /health without a token returns 401
+PASS  health.auth.badtoken.401  GET /health with a wrong token returns 401
+PASS  auth.precedes.404  Unauthenticated request to a gated route returns 401, not 404
+PASS  health.ok  GET /health returns 200
+SKIP  files.upload.201  POST /uploads returns 201 with a valid upload-response
+      agent does not declare 'files'
+SKIP  files.download.404  GET /files/<unknown> returns 404 with the error shape
+      agent does not declare 'files'
+SKIP  files.roundtrip  An uploaded file survives message -> reply -> download intact
+      agent does not declare 'files'
+PASS  files.undeclared.404  POST /uploads returns 404 when files is undeclared
+SKIP  mcp.initialize  POST /mcp completes an MCP initialize handshake
+      agent does not declare 'mcp-tools'
+SKIP  mcp.tools  tools/list and tools/call work
+      agent does not declare 'mcp-tools'
+SKIP  mcp.ui  A ui:// resource is listed and readable as text/html
+      agent does not declare 'mcp-apps-ui'
+PASS  mcp.undeclared.404  POST /mcp returns 404 when no MCP capability is declared
+PASS  error.shape  A 401 body uses the error shape
+PASS  outbox.ok  GET /outbox returns 200 and a valid outbox-page
+PASS  outbox.cursor.invalid  GET /outbox rejects a non-integer cursor with 400
+PASS  messages.notowner.403  POST /messages with a foreign personId returns 403
+PASS  messages.invalid.400  POST /messages with a malformed body returns 400
+PASS  messages.202  POST /messages returns 202 and echoes the messageId
+PASS  outbox.ack  An accepted message produces an ack event
+PASS  outbox.reply  A reply event arrives carrying a valid assistant-reply
+PASS  messages.dedup  Re-POSTing a messageId emits no additional events
+PASS  cursor.equivalence  Last-Event-ID and ?after= yield the same events (invariant 2)
+
+PASS — 19 passed, 0 failed, 6 skipped (http://127.0.0.1:8791)

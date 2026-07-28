@@ -85,6 +85,10 @@ export function makeConfig(overrides: Partial<Config> = {}): Config {
     remarkableEnabled: false, // Stage 19 ships dark; remarkable tests flip it on
     remarkableFolder: '/Inbox',
     rmapiBin: 'rmapi', // never invoked unless a test wires the rmapi stub
+    appTransportEnabled: false, // Stage 24 ships dark; app-transport tests flip it on
+    appToken: '',
+    appBind: ['127.0.0.1'],
+    appPort: 0, // ephemeral
     ...overrides,
   };
 }
