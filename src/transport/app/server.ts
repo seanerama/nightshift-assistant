@@ -17,14 +17,24 @@
  * reply arrives later as a `reply` event. GET /events (SSE, Last-Event-ID
  * resume, comment keep-alives) and GET /outbox?after= serve the same events
  * by the same `app_outbox.id` cursor (invariant 2).
+ *
+ * Files (Stage 26): POST /uploads lands multipart bytes in the existing
+ * uploads/<ts>-<name> layout (size-capped BEFORE any disk write, filename
+ * sanitized); GET /files/<id> serves ONLY ids in the durable app_files
+ * mapping, re-confined at serve time. Inbound attachments (upload ids)
+ * resolve to absolute local paths before relay() — the session cannot tell
+ * which door a file came through — and the reply event echoes the message's
+ * attachment ids plus fresh ids for any confined relay-produced files.
  */
 
 import { createHash, timingSafeEqual } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { Config } from '../../config.js';
 import type { Logger } from '../../log.js';
 import type { AssistantReply, InboundMessage } from '../../types.js';
 import { readRawBody, respond } from '../server.js';
+import type { AppFiles } from './files.js';
 import type { AppEvent, AppOutbox } from './outbox.js';
 
 /** SSE comment keep-alive cadence — frequent enough for phone NATs, cheap enough to ignore. */
@@ -33,18 +43,26 @@ const KEEPALIVE_MS = 15_000;
 /** Contract identity served on GET /app/v1/manifest. Capabilities are BINDING (ADR 0009). */
 const AGENT_NAME = 'nightshift-assistant';
 /**
- * Exactly ["chat"] this stage — the schema-mandated floor, served for real.
- * files / mcp-tools / mcp-apps-ui are added ONLY when their stage's harness
- * checks are green (Stages 26–28); declaring earlier makes the manifest a lie.
+ * Declaring is BINDING (ADR 0009): "chat" is the schema-mandated floor
+ * (Stage 24); "files" landed with Stage 26's upload→attach→retrieve loop
+ * harness-green. mcp-tools / mcp-apps-ui are added ONLY when their stage's
+ * checks pass (Stages 27–28); declaring earlier makes the manifest a lie.
  */
-const CAPABILITIES: readonly string[] = ['chat'];
+const CAPABILITIES: readonly string[] = ['chat', 'files'];
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Multipart parse overhead allowed beyond the attachment cap (headers + boundary). */
+const MULTIPART_OVERHEAD_BYTES = 64 * 1024;
+
+const BYTES_PER_MB = 1024 * 1024;
 
 export interface AppTransportDeps {
   config: Config;
   log: Logger;
   outbox: AppOutbox;
+  /** The durable id→path registry behind /uploads and /files (Stage 26). */
+  files: AppFiles;
   /** The frozen seam (contracts/assistant-session.md) — consumed as-is, off the request path. */
   relay(msg: InboundMessage): Promise<AssistantReply>;
   version: string;
@@ -87,7 +105,7 @@ interface WireInbound {
   messageId: string;
   personId: string;
   text: string;
-  /** Upload ids. `files` is undeclared this stage, so there are never ids to resolve. */
+  /** Upload ids previously returned by POST /app/v1/uploads (Stage 26). */
   attachments: string[];
   receivedAt: string;
 }
@@ -134,31 +152,100 @@ function validateInbound(
   };
 }
 
+/** Rejection carrying "the body outgrew the cap" — distinct from transport errors. */
+class BodyTooLargeError extends Error {}
+
+/**
+ * Bounded body reader for uploads: rejects the moment the cap is crossed,
+ * BEFORE anything could reach disk. The request is left undestroyed so the
+ * 413 can still go out on the same socket; the handler drains the remainder.
+ */
+function readBoundedBody(req: IncomingMessage, maxBytes: number): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const parts: Buffer[] = [];
+    let size = 0;
+    let rejected = false;
+    req.on('data', (part: Buffer) => {
+      if (rejected) return; // draining after rejection
+      size += part.length;
+      if (size > maxBytes) {
+        rejected = true;
+        parts.length = 0;
+        reject(new BodyTooLargeError());
+        return;
+      }
+      parts.push(part);
+    });
+    req.on('end', () => {
+      if (!rejected) resolve(Buffer.concat(parts));
+    });
+    req.on('error', (err) => {
+      if (!rejected) reject(err);
+    });
+  });
+}
+
+/**
+ * Minimal multipart/form-data reader: the first part carrying a filename.
+ * Deliberately hand-rolled (like the control surface's own parsers) — the
+ * contract needs "a file part in, bytes out", nothing more.
+ */
+function firstFilePart(
+  body: Buffer,
+  contentType: string,
+): { filename: string; bytes: Buffer } | null {
+  if (!/^multipart\/form-data/i.test(contentType)) return null;
+  const boundaryMatch = /boundary=(?:"([^"]+)"|([^;]+))/i.exec(contentType);
+  const boundary = (boundaryMatch?.[1] ?? boundaryMatch?.[2])?.trim();
+  if (boundary === undefined || boundary === '') return null;
+  const delimiter = Buffer.from(`--${boundary}`);
+  let index = body.indexOf(delimiter);
+  while (index !== -1) {
+    const start = index + delimiter.length;
+    const next = body.indexOf(delimiter, start);
+    if (next === -1) break;
+    // Trim the CRLF that opens the part and the CRLF that closes it.
+    const part = body.subarray(start + 2, next - 2);
+    const split = part.indexOf('\r\n\r\n');
+    if (split !== -1) {
+      const headers = part.subarray(0, split).toString('utf8');
+      const filename = /filename="([^"]*)"/i.exec(headers)?.[1];
+      if (filename !== undefined && filename !== '') {
+        return { filename, bytes: Buffer.from(part.subarray(split + 4)) };
+      }
+    }
+    index = next;
+  }
+  return null;
+}
+
 export function createAppTransport(deps: AppTransportDeps): AppTransport {
-  const { config, log, outbox, relay, version } = deps;
+  const { config, log, outbox, files, relay, version } = deps;
   const startedAt = Date.now();
   let boundPort: number | null = null;
 
   /** Everything after the 202: relay, then a durable `reply` row (SSE emit rides append). */
-  async function processMessage(wire: WireInbound): Promise<void> {
+  async function processMessage(wire: WireInbound, attachments: string[]): Promise<void> {
     const inbound: InboundMessage = {
       schema: 1,
       messageId: wire.messageId,
       personId: wire.personId,
       text: wire.text,
-      // Wire attachments are upload ids (`files` capability — undeclared this
-      // stage, Stage 26). NEVER passed through as local paths.
-      attachments: [],
+      // Absolute uploads/<ts>-<name> paths — exactly what the Webex door
+      // produces, so the session cannot tell which door a file came through.
+      attachments,
       receivedAt: wire.receivedAt,
     };
     try {
       const reply = await relay(inbound);
-      // Wire AssistantReply: `files` carries servable ids only — none until
-      // the `files` capability lands, so local paths are dropped, not leaked.
+      // Wire AssistantReply.files carries servable ids only: the message's
+      // own attachment ids ride back (the certified round-trip — upload,
+      // reference, receive back, download), plus fresh ids for any confined
+      // relay-produced files. Unconfined local paths are dropped, not leaked.
       outbox.append('reply', {
         schema: 1,
         text: reply.text,
-        files: [],
+        files: [...wire.attachments, ...files.issueIds(reply.files)],
         ...(reply.sessionId !== '' ? { sessionId: reply.sessionId } : {}),
         rotated: reply.rotated,
       });
@@ -198,6 +285,20 @@ export function createAppTransport(deps: AppTransportDeps): AppTransport {
       sendError(res, 403, 'personId does not match the configured owner id');
       return;
     }
+    // Attachments are upload ids from POST /uploads. An unknown id is a
+    // client error refused up front (400) — silently dropping a file the
+    // owner meant to send would be quiet data loss. (The reference mock
+    // filters instead; the mock is not the oracle, the harness never sends
+    // an unregistered id.)
+    const attachments: string[] = [];
+    for (const id of wire.attachments) {
+      const path = files.resolve(id);
+      if (path === null) {
+        sendError(res, 400, `unknown upload id in attachments: ${id}`);
+        return;
+      }
+      attachments.push(path);
+    }
     // Invariant 5: the ack row is the durable acceptance record. A re-POST
     // (same client UUID) finds it — 202 again, nothing new emitted, no
     // re-run, across daemon restarts included.
@@ -205,7 +306,7 @@ export function createAppTransport(deps: AppTransportDeps): AppTransport {
       outbox.append('ack', { messageId: wire.messageId });
       // 202 BEFORE relay(): the turn runs off the request path.
       setImmediate(() => {
-        processMessage(wire).catch((err: unknown) => {
+        processMessage(wire, attachments).catch((err: unknown) => {
           log.error('app message processing failed', {
             messageId: wire.messageId,
             error: err instanceof Error ? err.message : String(err),
@@ -248,6 +349,67 @@ export function createAppTransport(deps: AppTransportDeps): AppTransport {
     });
   }
 
+  async function handleUploads(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    // Size-cap discipline (NIGHTSHIFT_ATTACH_MAX_MB, same knob as Webex
+    // attachments): enforced WHILE reading — an oversize body is refused
+    // before a single byte can reach disk. 0 disables file uploads entirely.
+    const capBytes = config.attachMaxMb * BYTES_PER_MB;
+    let raw: Buffer;
+    try {
+      raw = await readBoundedBody(req, capBytes + MULTIPART_OVERHEAD_BYTES);
+    } catch (err) {
+      if (err instanceof BodyTooLargeError) {
+        sendError(
+          res,
+          413,
+          `upload exceeds the ${config.attachMaxMb}MB cap (NIGHTSHIFT_ATTACH_MAX_MB)`,
+        );
+        req.resume(); // drain the remainder so the 413 can be delivered
+        return;
+      }
+      throw err;
+    }
+    const part = firstFilePart(raw, req.headers['content-type'] ?? '');
+    if (part === null) {
+      sendError(res, 400, 'expected multipart/form-data with a file part');
+      return;
+    }
+    if (part.bytes.length > capBytes) {
+      sendError(
+        res,
+        413,
+        `upload exceeds the ${config.attachMaxMb}MB cap (NIGHTSHIFT_ATTACH_MAX_MB)`,
+      );
+      return;
+    }
+    const saved = files.saveUpload(part.filename, part.bytes);
+    // upload-response.json: 201 Created exactly; path is informational only.
+    respond(res, 201, { ok: true, uploadId: saved.uploadId, path: saved.relPath });
+  }
+
+  function handleFileDownload(id: string, res: ServerResponse): void {
+    // NEVER an arbitrary-path read: only ids in the durable mapping resolve,
+    // re-confined at serve time. Unknown/vanished/escaped → 404 (auth already
+    // passed — 401 still precedes this).
+    const real = files.resolve(id);
+    if (real === null) {
+      sendError(res, 404, `no such file: ${id}`);
+      return;
+    }
+    let bytes: Buffer;
+    try {
+      bytes = readFileSync(real);
+    } catch {
+      sendError(res, 404, `no such file: ${id}`);
+      return;
+    }
+    res.writeHead(200, {
+      'Content-Type': 'application/octet-stream',
+      'Content-Length': bytes.length,
+    });
+    res.end(bytes);
+  }
+
   function handleOutbox(url: URL, res: ServerResponse): void {
     const afterParam = url.searchParams.get('after');
     if (afterParam !== null && !/^\d+$/.test(afterParam)) {
@@ -258,7 +420,36 @@ export function createAppTransport(deps: AppTransportDeps): AppTransport {
     respond(res, 200, { schema: 1, events: outbox.after(after) });
   }
 
+  /**
+   * decodeURIComponent that treats malformed percent-encoding as the literal
+   * string instead of throwing URIError. No issued id contains a raw '%', so
+   * a malformed id simply misses the mapping and 404s like any unknown id.
+   */
+  function safeDecode(raw: string): string {
+    try {
+      return decodeURIComponent(raw);
+    } catch {
+      return raw;
+    }
+  }
+
   function handle(req: IncomingMessage, res: ServerResponse): void {
+    // CONTAINMENT (review fix, PR #67): the entire synchronous dispatch is
+    // guarded — an app-surface failure must answer with the error shape, and
+    // must NEVER escape to crash the daemon (the Webex door rides in the same
+    // process). Async handlers carry their own .catch with the same posture.
+    try {
+      routeRequest(req, res);
+    } catch (err) {
+      log.error('app request handler failed', {
+        path: req.url?.split('?')[0],
+        error: err instanceof Error ? err.message : String(err),
+      });
+      if (!res.headersSent) sendError(res, 500, 'internal error');
+    }
+  }
+
+  function routeRequest(req: IncomingMessage, res: ServerResponse): void {
     // Gate 1 — bearer auth BEFORE routing: 401 precedes 404 on every path,
     // real or not, so the surface is not enumerable without a token.
     const authHeader = req.headers.authorization;
@@ -311,8 +502,21 @@ export function createAppTransport(deps: AppTransportDeps): AppTransport {
       handleOutbox(url, res);
       return;
     }
-    // Includes the capability-gated routes (/uploads, /files, /mcp): none of
-    // their capabilities are declared, so they 404 — correct gating, not a stub.
+    if (method === 'POST' && path === '/app/v1/uploads') {
+      handleUploads(req, res).catch((err: unknown) => {
+        log.error('app uploads handler error', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+        if (!res.headersSent) sendError(res, 500, 'internal error');
+      });
+      return;
+    }
+    if (method === 'GET' && path.startsWith('/app/v1/files/')) {
+      handleFileDownload(safeDecode(path.slice('/app/v1/files/'.length)), res);
+      return;
+    }
+    // Includes /mcp: neither MCP capability is declared (Stages 27–28), so it
+    // 404s — correct gating, not a stub.
     sendError(res, 404, 'not found');
   }
 
