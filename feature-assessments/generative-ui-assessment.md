@@ -107,3 +107,34 @@ sandbox; needs ADR; keep as fallback); raising the 300s turn cap (symptom,
 not cause); daemon-side authoring door taking inline HTML from a new
 transport (already exists — the door takes { html }; the gap is purely CLI
 input form).
+
+## Stage-37/38 addendum (2026-07-28, Mode B intake): state store + iteration fidelity
+
+**Trigger:** owner's first real usage after DoD steps 1–2. Observed: (a) data
+added through the page UI vanished on iteration to v2 — pages hold state in
+in-memory JS only (ui-bridge bans storage; zero granted tools; none of the
+five MCP tools stores anything), so interactive state is ephemeral and
+invisible to the assistant; (b) the v2 authoring regenerated from memory
+rather than editing the installed HTML — chat-added content is also at risk.
+
+**Claim/reality:** TOOLS const + "exactly five" pins at
+test/app-mcp.test.ts:206 (deliberate flag-conditional update);
+MCP_TOOL_NAMES at src/ui/registry.ts:30 (grantable universe follows the
+catalog); next migration 0010; grant flow (stage 33) reusable unchanged;
+tools/call carries NO caller identity → cross-resource caveat is real and
+must be surfaced in the grant ask (ADR 0016).
+
+**Decision:** ACCEPT, SPLIT:
+- Stage 37 (feature, deps 33,36): NEW seam → contracts/ui-state.md v1 +
+  ADR 0016 — per-name JSON document (64 KB, replace semantics), ui_state_get/
+  set MCP tools advertised flag-on only (flag off = certified five,
+  byte-identical), control doors + `nightshift ui state`, version-independent
+  by the ADR 0015 grants symmetry.
+- Stage 38 (chore, deps 36,37): preamble-only — iterate-from-installed-HTML
+  hard rule + state-aware authoring pattern incl. the namespace-wide grant
+  wording and degradable-when-ungranted.
+
+**Contract safety:** generative-ui.md and app-ingress.md NOT edited (tool
+growth additive; flag-off surface unchanged is the pinned invariant);
+new seam gets its own frozen contract. Rejected alternatives recorded in
+ADR 0016 (allow localStorage; bake data into HTML; keyed KV; generic KV).
