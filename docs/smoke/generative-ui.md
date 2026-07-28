@@ -113,6 +113,55 @@ Apps tab serves v1. (Asking the assistant "go back to the first version" and
 seeing it run the activate itself is the full-marks variant.) Re-activate v2
 if you prefer it before moving on.
 
+## 2'. State survival: iterate a state-holding page, the data survives (Stage 38)
+
+The exact regression from the 2026-07-28 DoD run, now the standing check:
+v2 was regenerated from memory and the owner's UI-added habits vanished.
+
+First make the tracker state-holding. From the phone, in chat:
+
+> make the habit tracker remember my habits
+
+**Expect:** the assistant iterates the SAME name to a version requesting
+`ui_state_get,ui_state_set` (via `--tools`), and ASKS in chat with the
+namespace-wide caveat spelled out — "state tools are namespace-wide in v1 —
+this page could read/write other pages' saved data. Allow?" — never granting
+on its own. Approve. On the host:
+
+```sh
+nightshift ui show <name>
+```
+
+**Expect:** granted lists `ui_state_get` and `ui_state_set`. In the Apps
+tab, open the page and add a habit or two, tick a checkmark. On the host:
+
+```sh
+nightshift ui state <name>
+```
+
+**Expect:** the JSON document reflects what you just did (write-back on
+every mutation), `updatedAt` fresh. An empty/null document after UI actions
+means the page is not calling `ui_state_set` — stop.
+
+Now the version bump:
+
+> add a weekly streak counter to the tracker
+
+**Expect:** the assistant fetches the ACTIVE version's exact HTML first
+(`nightshift ui show <name> <version> --json`) and edits it — watch the
+narration; a from-scratch regeneration is the stage-38 defect. After
+install, `nightshift ui show <name>` lists the new version active. Open the
+page: your habits and checkmarks are STILL THERE — state rides the name,
+not the version, and the new version loads it on `ui/ready`. On the host:
+
+```sh
+nightshift ui state <name>
+```
+
+**Expect:** the document unchanged by the version bump itself (`updatedAt`
+moves only on user mutations). Any data loss across the iteration is the
+stage-38 regression — stop and file it.
+
 ## 3. Grants: refused before, works after
 
 From the phone, in chat:
