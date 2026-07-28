@@ -317,6 +317,28 @@ describe('control-enabled session spawn (Stage 5 gating)', () => {
     expect(GENERATIVE_UI_PREAMBLE).toContain('Apps tab');
   });
 
+  it('generative-ui loop composes via stdin heredoc, never a temp file (Stage 36)', () => {
+    // Live repro 2026-07-28 (session 84b4442c): the containment grants NO
+    // file-write path, so "write the HTML to a temp file" dead-ended every
+    // turn. The loop must pipe the page into the allowlisted CLI in ONE
+    // command via stdin (`-`) heredoc.
+    expect(GENERATIVE_UI_PREAMBLE).not.toContain('temp file');
+    expect(GENERATIVE_UI_PREAMBLE).toContain("<<'");
+    expect(GENERATIVE_UI_PREAMBLE).toContain('nightshift ui validate -');
+    expect(GENERATIVE_UI_PREAMBLE).toContain('nightshift ui install -');
+    expect(GENERATIVE_UI_PREAMBLE).toContain('ONE command');
+    // The one composition footgun of the heredoc form is named.
+    expect(GENERATIVE_UI_PREAMBLE).toContain('delimiter must not occur');
+    // The loop's guidance that survived the rewrite: verdict names rule +
+    // detail; failed attempts are free; the owner-facing landmark.
+    expect(GENERATIVE_UI_PREAMBLE).toContain('failed rule + detail');
+    expect(GENERATIVE_UI_PREAMBLE).toContain('consume no version numbers');
+    // The CLI's USAGE documents the stdin form the preamble teaches.
+    const cli = readFileSync(REAL_CLI, 'utf8');
+    expect(cli).toContain('ui validate <file|->');
+    expect(cli).toContain('ui install <file|->');
+  });
+
   it('omits the type list while the registry kill-switch is OFF', async () => {
     const mgr = makeManager(); // typesEnabled stays false
     await mgr.relay(inbound('hello'));
