@@ -49,17 +49,21 @@ Usage:
                                    syncs to the tablet on its next sync; allowed
                                    roots: ~/projects and the app's jobs/ + logs/
                                    dirs)
-  nightshift ui validate <file>    Dry-run the generative-UI validator on a
+  nightshift ui validate <file|->  Dry-run the generative-UI validator on a
                                    single-file HTML page (nothing written; exit
-                                   0 only when the page is valid)
-  nightshift ui install <file> --name <n> [--tools a,b] [--provenance <text>]
+                                   0 only when the page is valid). "-" reads
+                                   the HTML from stdin to EOF (pipe or
+                                   heredoc); "-" ALWAYS means stdin, never a
+                                   file named "-"
+  nightshift ui install <file|-> --name <n> [--tools a,b] [--provenance <text>]
                                    Validate + register the page as the NEXT
                                    version of ui://nightshift/<n> (v1 for a
                                    new name), made active; prior versions are
                                    retained for rollback. --tools names MCP
                                    tools the page requests (grants are
                                    separate; the served allowlist stays empty
-                                   until granted)
+                                   until granted). "-" reads the HTML from
+                                   stdin, exactly as on ui validate
   nightshift ui list               List registered UI resources (active
                                    version per name)
   nightshift ui show <name> [<version>]
@@ -316,6 +320,10 @@ function parseArgs(argv) {
       if (value === undefined) fail(`${arg} requires a value\n\n${USAGE}`);
       options[arg.slice(2)] = value;
       i += 1;
+    } else if (arg === '-') {
+      // Stage 36: bare `-` is a positional (stdin marker for ui validate/
+      // install), never an option.
+      positionals.push(arg);
     } else if (arg.startsWith('-')) {
       fail(`unknown option: ${arg}\n\n${USAGE}`);
     } else {
@@ -444,11 +452,26 @@ async function runCommand(conn, parsed) {
     }
     case 'ui': {
       // 1:1 face of the /api/v1/ui/* doors (Stages 31–33, contracts/generative-ui.md).
-      // Files are read HERE (the CLI's cwd) and shipped as HTML in the body —
-      // the daemon never reads author files from disk.
+      // Files (or stdin, via `-` — Stage 36) are read HERE and shipped as HTML
+      // in the body — the daemon never reads author files from disk.
       const sub = positionals[0];
       const readHtml = async (target) => {
-        if (target === undefined) fail(`ui ${sub} requires a file path\n\n${USAGE}`);
+        if (target === undefined) {
+          fail(`ui ${sub} requires a file path (or - for stdin)\n\n${USAGE}`);
+        }
+        if (target === '-') {
+          // Stage 36: `-` ALWAYS means stdin (a file literally named "-" is
+          // not addressable this way — use a path). Read to EOF; works for
+          // pipes and heredocs alike. An empty body is an authoring mistake —
+          // fail HERE, nothing is sent to the daemon.
+          const chunks = [];
+          for await (const chunk of process.stdin) chunks.push(chunk);
+          const html = Buffer.concat(chunks).toString('utf8');
+          if (html.trim() === '') {
+            fail(`ui ${sub} -: stdin was empty — pipe or heredoc the HTML into the command\n\n${USAGE}`);
+          }
+          return html;
+        }
         const fs = await import('node:fs');
         const path = await import('node:path');
         try {

@@ -75,6 +75,18 @@ EMPTY. Any `tools/call` the page attempts is refused by the client shell
 (JSON-RPC `-32601`, per ui-bridge). A non-empty allowlist without a grant is
 a zero-trust breach — stop.
 
+**Mechanics (Stage 36):** the assistant has no file-write path — it pipes the
+HTML via a stdin heredoc into the allowlisted CLI in ONE command
+(`nightshift ui validate - <<'NSUI_EOF' … NSUI_EOF`, same for `ui install -`).
+This is the stage's live-cert concern: the claude permission matcher accepting
+a heredoc-fed allowlisted command is the one claim CI cannot prove. If the
+phone request stalls ~5 min and then errors (the 300s turn cap), check the
+session transcript for permission denials on the heredoc command — a denial
+there means STOP and re-intake (the fallback design widens the sandbox and
+needs an ADR). If the denial is absent and the session simply predates the
+deploy, `nightshift rotate` and retry (the rewritten preamble only rides NEW
+sessions).
+
 ## 2. Iteration: v2 under the same name, rollback works
 
 From the phone, in chat:
