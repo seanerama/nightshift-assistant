@@ -29,9 +29,21 @@
  * MCP (Stage 27, ADR 0012): POST /mcp is delegated to the AppMcp bridge —
  * five thin tools over the same App.jobs/App.sessions doors the control API
  * uses. Mounted INSIDE this dispatch, so bearer auth (401 first), the flag,
- * and the containment posture all apply unchanged. POST-only per the
- * contract; GET/DELETE answer 405 (a streamable-HTTP client reads that as
- * "no standalone SSE / no session termination", per the MCP spec).
+ * and the containment posture all apply unchanged.
+ *
+ * MCP GET stream (Stage 34, ADR 0015): GET /mcp with Accept:
+ * text/event-stream opens the streamable-HTTP spec's optional SSE stream for
+ * server-initiated messages — the delivery channel for
+ * notifications/resources/list_changed, broadcast by the shared UiNotifyHub
+ * on registry mutations (register/activate/grant/revoke via the control
+ * API). Same bearer + flag gate as every /app/v1/* route; the stream exists
+ * whenever the app transport is up, regardless of the generative-ui flag
+ * (it is part of the MCP transport — mutations simply cannot happen while
+ * that flag is off). GET without text/event-stream in Accept → 406 (the
+ * SDK's own rejection for the same case); DELETE and the rest still 405
+ * ("no session termination", per the MCP spec — no app-ingress v1 change:
+ * the GET stream is part of the streamable-HTTP transport the pinned
+ * contract already names, not a new route shape).
  */
 
 import { createHash, timingSafeEqual } from 'node:crypto';
@@ -42,7 +54,7 @@ import type { Logger } from '../../log.js';
 import type { AssistantReply, InboundMessage } from '../../types.js';
 import { readRawBody, respond } from '../server.js';
 import type { AppFiles } from './files.js';
-import type { AppMcp } from './mcp.js';
+import type { AppMcp, UiNotifyHub } from './mcp.js';
 import type { AppEvent, AppOutbox } from './outbox.js';
 
 /** SSE comment keep-alive cadence — frequent enough for phone NATs, cheap enough to ignore. */
@@ -74,6 +86,12 @@ export interface AppTransportDeps {
   files: AppFiles;
   /** The MCP bridge behind POST /mcp (Stage 27, ADR 0012). */
   mcp: AppMcp;
+  /**
+   * The list_changed broadcaster behind GET /mcp (Stage 34, ADR 0015) —
+   * SHARED with the control API's mutation doors via src/app.ts, since
+   * mutations arrive on the loopback server while the streams live here.
+   */
+  uiNotify: UiNotifyHub;
   /** The frozen seam (contracts/assistant-session.md) — consumed as-is, off the request path. */
   relay(msg: InboundMessage): Promise<AssistantReply>;
   version: string;
@@ -231,7 +249,7 @@ function firstFilePart(
 }
 
 export function createAppTransport(deps: AppTransportDeps): AppTransport {
-  const { config, log, outbox, files, mcp, relay, version } = deps;
+  const { config, log, outbox, files, mcp, uiNotify, relay, version } = deps;
   const startedAt = Date.now();
   let boundPort: number | null = null;
 
@@ -357,6 +375,32 @@ export function createAppTransport(deps: AppTransportDeps): AppTransport {
     req.on('close', () => {
       clearInterval(keepAlive);
       unsubscribe();
+    });
+  }
+
+  /**
+   * GET /app/v1/mcp (Stage 34, ADR 0015): the streamable-HTTP spec's optional
+   * SSE stream for server-initiated messages — long-lived, comment
+   * keep-alives, same discipline as /app/v1/events. Nothing to replay (the
+   * notification is best-effort by spec); the opening comment flushes the
+   * headers so a client sees the stream is live immediately.
+   */
+  function handleMcpStream(req: IncomingMessage, res: ServerResponse): void {
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+    });
+    res.write(': stream open\n\n');
+    const detach = uiNotify.attach(res);
+    // Comment keep-alives: ignored by clients, keep NATs and proxies awake.
+    const keepAlive = setInterval(() => {
+      res.write(': keep-alive\n\n');
+    }, KEEPALIVE_MS);
+    keepAlive.unref();
+    req.on('close', () => {
+      clearInterval(keepAlive);
+      detach();
     });
   }
 
@@ -538,9 +582,27 @@ export function createAppTransport(deps: AppTransportDeps): AppTransport {
         });
         return;
       }
-      // The contract exposes POST only; 405 tells a streamable-HTTP client
-      // "no standalone SSE stream, no session DELETE" (MCP spec behavior).
-      sendError(res, 405, 'method not allowed (POST only)');
+      if (method === 'GET') {
+        // Stage 34 (ADR 0015): the streamable-HTTP spec's optional SSE
+        // stream. The spec requires the client to list text/event-stream in
+        // Accept; without it the stream is refused 406 Not Acceptable — the
+        // SDK transport's own rejection for the identical case.
+        const acceptRaw = req.headers.accept;
+        const accept = Array.isArray(acceptRaw) ? acceptRaw.join(', ') : (acceptRaw ?? '');
+        if (!accept.includes('text/event-stream')) {
+          sendError(
+            res,
+            406,
+            'GET /app/v1/mcp requires Accept: text/event-stream (MCP SSE stream)',
+          );
+          return;
+        }
+        handleMcpStream(req, res);
+        return;
+      }
+      // Everything else (DELETE and friends) stays 405 — a streamable-HTTP
+      // client reads that as "no session termination" (MCP spec behavior).
+      sendError(res, 405, 'method not allowed (POST or GET only)');
       return;
     }
     sendError(res, 404, 'not found');

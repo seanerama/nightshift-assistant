@@ -25,6 +25,7 @@ import { describe, expect, it } from 'vitest';
 import type { Config } from '../src/config.js';
 import { migrate, openDatabase } from '../src/db/migrate.js';
 import { type AppFiles, createAppFiles, sanitizeFilename } from '../src/transport/app/files.js';
+import { createUiNotifyHub } from '../src/transport/app/mcp.js';
 import { type AppEvent, type AppOutbox, createAppOutbox } from '../src/transport/app/outbox.js';
 import { type AppTransport, createAppTransport } from '../src/transport/app/server.js';
 import type { AssistantReply, InboundMessage } from '../src/types.js';
@@ -81,6 +82,7 @@ async function start(
     outbox,
     files,
     mcp: makeAppMcp(database, log, config),
+    uiNotify: createUiNotifyHub(log),
     relay: (msg) => {
       relayCalls.push(msg);
       return relay(msg);
