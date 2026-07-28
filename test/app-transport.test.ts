@@ -585,7 +585,7 @@ describe('migrations 0007_app_outbox + 0008_app_files', () => {
     const fileCols = db.prepare('PRAGMA table_info(app_files)').all() as Array<{ name: string }>;
     expect(fileCols.map((c) => c.name)).toEqual(['id', 'path', 'created_at']);
     const head = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(head.v).toBe(8);
+    expect(head.v).toBe(9); // ladder head: 0009_ui_registry (Stage 31)
     db.close();
   });
 
@@ -610,16 +610,19 @@ describe('migrations 0007_app_outbox + 0008_app_files', () => {
       const after = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as {
         v: number;
       };
-      expect(after.v).toBe(8);
+      expect(after.v).toBe(9);
       const tablesAfter = db
         .prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
         .all() as Array<{ name: string }>;
-      // Exactly the two new app-transport tables; every pre-existing one untouched.
+      // Exactly the new app-transport tables (0007/0008) plus the Stage 31
+      // ui-registry pair (0009); every pre-existing one untouched.
       expect(tablesAfter.map((t) => t.name)).toEqual(
         [
           ...(tablesBefore as Array<{ name: string }>).map((t) => t.name),
           'app_outbox',
           'app_files',
+          'ui_resources',
+          'ui_grants',
         ].sort(),
       );
       db.close();

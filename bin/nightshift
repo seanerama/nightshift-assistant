@@ -49,6 +49,18 @@ Usage:
                                    syncs to the tablet on its next sync; allowed
                                    roots: ~/projects and the app's jobs/ + logs/
                                    dirs)
+  nightshift ui validate <file>    Dry-run the generative-UI validator on a
+                                   single-file HTML page (nothing written; exit
+                                   0 only when the page is valid)
+  nightshift ui install <file> --name <n> [--tools a,b] [--provenance <text>]
+                                   Validate + register the page as
+                                   ui://nightshift/<n>@v1, made active (a
+                                   taken name refuses — new versions land in
+                                   Stage 32). --tools names MCP tools the
+                                   page requests (grants are separate; the
+                                   served allowlist stays empty until granted)
+  nightshift ui list               List registered UI resources (active
+                                   version per name)
   nightshift rotate                Rotate the conversational session (manual)
   nightshift status                Daemon status (version, uptime, session, job counts)
 
@@ -189,6 +201,45 @@ function formatPromotion(p) {
   return lines.join('\n');
 }
 
+/** Readable validator verdict (contracts/generative-ui.md verdict shape). */
+function formatVerdict(v) {
+  if (v.valid) return 'Valid.';
+  const lines = ['INVALID:'];
+  for (const violation of v.violations) lines.push(`  ${violation.rule}: ${violation.detail}`);
+  return lines.join('\n');
+}
+
+/** Readable one-resource block (UiResourceRecord, html never present here). */
+function formatUiResource(r) {
+  return [
+    `name:      ${r.name}`,
+    `version:   ${r.version}`,
+    `uri:       ui://nightshift/${r.name}@v${r.version}`,
+    `active:    ${r.active ? 'yes' : 'no'}`,
+    `requested: ${r.requestedTools.length > 0 ? r.requestedTools.join(', ') : '(none)'}`,
+    `granted:   ${r.grantedTools.length > 0 ? r.grantedTools.join(', ') : '(none — zero-trust)'}`,
+    `bytes:     ${r.htmlBytes}`,
+    `created:   ${r.createdAt}`,
+    ...(r.provenance ? [`provenance: ${r.provenance}`] : []),
+  ].join('\n');
+}
+
+/** Readable ui resources table. */
+function formatUiList(resources) {
+  if (resources.length === 0) return '(no ui resources)';
+  const rows = resources.map((r) => [
+    r.name,
+    `v${r.version}`,
+    r.active ? 'yes' : 'no',
+    r.requestedTools.join(',') || '-',
+    String(r.htmlBytes),
+  ]);
+  const header = ['NAME', 'VER', 'ACTIVE', 'REQUESTED', 'BYTES'];
+  const widths = header.map((h, i) => Math.max(h.length, ...rows.map((r) => r[i].length)));
+  const line = (cols) => cols.map((c, i) => c.padEnd(widths[i])).join('  ');
+  return [line(header), ...rows.map(line)].join('\n');
+}
+
 function formatStatus(s) {
   const j = s.jobs;
   return [
@@ -212,6 +263,9 @@ function parseArgs(argv) {
     '--params',
     '--note',
     '--slug',
+    '--name',
+    '--tools',
+    '--provenance',
   ]);
   const options = {};
   const positionals = [];
@@ -354,6 +408,49 @@ async function runCommand(conn, parsed) {
         result,
         render: (r) => `Pushed ${r.pushed.path} to reMarkable ${r.pushed.folder}`,
       };
+    }
+    case 'ui': {
+      // 1:1 face of the Stage 31 /api/v1/ui/* doors (contracts/generative-ui.md).
+      // Files are read HERE (the CLI's cwd) and shipped as HTML in the body —
+      // the daemon never reads author files from disk.
+      const sub = positionals[0];
+      const readHtml = async (target) => {
+        if (target === undefined) fail(`ui ${sub} requires a file path\n\n${USAGE}`);
+        const fs = await import('node:fs');
+        const path = await import('node:path');
+        try {
+          return fs.readFileSync(path.resolve(target), 'utf8');
+        } catch (err) {
+          fail(`cannot read ${target}: ${err.message}`);
+        }
+      };
+      if (sub === 'validate') {
+        const html = await readHtml(positionals[1]);
+        const result = await callApi(conn, 'POST', '/api/v1/ui/validate', { html });
+        return { result, render: (r) => formatVerdict(r.verdict) };
+      }
+      if (sub === 'install') {
+        if (options.name === undefined || options.name === '') {
+          fail(`ui install requires --name\n\n${USAGE}`);
+        }
+        const html = await readHtml(positionals[1]);
+        const body = { name: options.name, html };
+        if (options.tools !== undefined) {
+          body.requestedTools = options.tools
+            .split(',')
+            .map((t) => t.trim())
+            .filter((t) => t !== '');
+        }
+        if (options.provenance !== undefined) body.provenance = options.provenance;
+        const result = await callApi(conn, 'POST', '/api/v1/ui/resources', body);
+        return { result, render: (r) => `Installed.\n${formatUiResource(r.resource)}` };
+      }
+      if (sub === 'list') {
+        const result = await callApi(conn, 'GET', '/api/v1/ui/resources');
+        return { result, render: (r) => formatUiList(r.resources) };
+      }
+      fail(`unknown ui subcommand: ${sub ?? '(none)'}\n\n${USAGE}`);
+      break;
     }
     case 'rotate': {
       const result = await callApi(conn, 'POST', '/api/v1/session/rotate', { reason: 'manual' });

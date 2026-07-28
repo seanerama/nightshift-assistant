@@ -12,6 +12,7 @@ import { createJobRunner } from '../src/jobs/runner.js';
 import type { Logger } from '../src/log.js';
 import type { SessionManager } from '../src/session/manager.js';
 import { type AppMcp, createAppMcp } from '../src/transport/app/mcp.js';
+import { createUiRegistry } from '../src/ui/registry.js';
 
 export const AGENT_STUB = fileURLToPath(new URL('./fixtures/agent-stub.cjs', import.meta.url));
 export const WORKER_STUB = fileURLToPath(new URL('./fixtures/worker-stub.cjs', import.meta.url));
@@ -93,6 +94,7 @@ export function makeConfig(overrides: Partial<Config> = {}): Config {
     appToken: '',
     appBind: ['127.0.0.1'],
     appPort: 0, // ephemeral
+    generativeUiEnabled: false, // Stage 31 ships dark; generative-ui tests flip it on
     ...overrides,
   };
 }
@@ -130,6 +132,7 @@ export function makeAppMcp(db: Database.Database, log: Logger, config: Config): 
     log,
     jobs: createJobRunner(db, log, config),
     sessions,
+    ui: createUiRegistry(db),
     version: '0.0.0-test',
   });
 }

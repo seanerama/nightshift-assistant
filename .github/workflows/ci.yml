@@ -69,43 +69,52 @@ jobs:
         run: npm ci
       - name: Build
         run: npm run build
-      - name: Run agent-app-conformance against the daemon (require exit 0)
+      # Stage 31: the harness must stay green in BOTH generative-ui flag
+      # states — flag off proves the app surface is byte-identical to before;
+      # flag on proves the registry mapping breaks nothing the contract pins.
+      - name: Run agent-app-conformance against the daemon (require exit 0, both generative-ui flag states)
         run: |
           set -euo pipefail
           TOKEN="$(node -p "require('node:crypto').randomBytes(24).toString('hex')")"
-          SCRATCH="$(mktemp -d)"
           export NIGHTSHIFT_ENABLED=true
           export WEBEX_BOT_TOKEN=ci-dummy-bot-token
           export WEBEX_WEBHOOK_SECRET=ci-dummy-webhook-secret
           export WEBEX_OWNER_PERSON_ID=ci-owner-person-id
-          export NIGHTSHIFT_DB_PATH="$SCRATCH/nightshift.db"
           export NIGHTSHIFT_AGENT_BIN="$PWD/test/fixtures/agent-stub.cjs"
           export APP_TRANSPORT_ENABLED=true
           export NIGHTSHIFT_APP_TOKEN="$TOKEN"
           export NIGHTSHIFT_APP_PORT=3778
-          node dist/index.js > "$SCRATCH/daemon.log" 2>&1 &
-          DAEMON_PID=$!
-          trap 'kill "$DAEMON_PID" 2>/dev/null || true' EXIT
-          for i in $(seq 1 100); do
-            if curl -fsS -H "Authorization: Bearer $TOKEN" \
-                "http://127.0.0.1:3778/app/v1/health" > /dev/null 2>&1; then
-              break
-            fi
-            if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
-              echo "daemon exited before becoming healthy"
+          trap 'kill "${DAEMON_PID:-0}" 2>/dev/null || true' EXIT
+          for GENUI in false true; do
+            echo "=== conformance with NIGHTSHIFT_GENERATIVE_UI_ENABLED=$GENUI ==="
+            SCRATCH="$(mktemp -d)"
+            export NIGHTSHIFT_DB_PATH="$SCRATCH/nightshift.db"
+            export NIGHTSHIFT_GENERATIVE_UI_ENABLED="$GENUI"
+            node dist/index.js > "$SCRATCH/daemon.log" 2>&1 &
+            DAEMON_PID=$!
+            for i in $(seq 1 100); do
+              if curl -fsS -H "Authorization: Bearer $TOKEN" \
+                  "http://127.0.0.1:3778/app/v1/health" > /dev/null 2>&1; then
+                break
+              fi
+              if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
+                echo "daemon exited before becoming healthy"
+                cat "$SCRATCH/daemon.log"
+                exit 1
+              fi
+              if [ "$i" = "100" ]; then
+                echo "daemon never became healthy"
+                cat "$SCRATCH/daemon.log"
+                exit 1
+              fi
+              sleep 0.2
+            done
+            if ! npx agent-app-conformance http://127.0.0.1:3778 \
+                --token "$TOKEN" --person-id ci-owner-person-id; then
+              echo "--- daemon log ---"
               cat "$SCRATCH/daemon.log"
               exit 1
             fi
-            if [ "$i" = "100" ]; then
-              echo "daemon never became healthy"
-              cat "$SCRATCH/daemon.log"
-              exit 1
-            fi
-            sleep 0.2
+            kill "$DAEMON_PID" 2>/dev/null || true
+            wait "$DAEMON_PID" 2>/dev/null || true
           done
-          if ! npx agent-app-conformance http://127.0.0.1:3778 \
-              --token "$TOKEN" --person-id ci-owner-person-id; then
-            echo "--- daemon log ---"
-            cat "$SCRATCH/daemon.log"
-            exit 1
-          fi

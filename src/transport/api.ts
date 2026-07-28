@@ -12,7 +12,9 @@
  *
  * Error mapping: JobError (invalid submit / disabled runner / illegal kill)
  * → 400 with the error message; DeliverError → its own 400/409;
- * AttachmentError (over-cap file) → 400; unknown job id → 404; anything else → 500.
+ * AttachmentError (over-cap file) → 400; UiRegistryError (rejected ui
+ * install/validate) → 422 with the validator verdict; unknown job id → 404;
+ * anything else → 500.
  */
 
 import { createHash, timingSafeEqual } from 'node:crypto';
@@ -23,6 +25,7 @@ import type { Logger } from '../log.js';
 import { type Promoter, PromotionError } from '../promotion/pipeline.js';
 import type { SessionManager } from '../session/manager.js';
 import type { JobStatus, JobSubmit } from '../types.js';
+import { type UiRegistry, UiRegistryError } from '../ui/registry.js';
 import { DeliverError, type Deliverer } from './deliver.js';
 import { RemarkableError, type RemarkablePusher } from './remarkable.js';
 import { AttachmentError } from './send.js';
@@ -41,6 +44,8 @@ export interface ApiDeps {
   promote: Promoter;
   /** Stage 19 (additive on control-api v1): POST /api/v1/remarkable. */
   remarkable: RemarkablePusher;
+  /** Stage 31 (additive on control-api v1): the /api/v1/ui/* doors. */
+  ui: UiRegistry;
   version: string;
 }
 
@@ -62,7 +67,7 @@ function tokenMatches(header: string | undefined, expected: string): boolean {
 }
 
 export function createApiHandler(deps: ApiDeps): ApiHandler {
-  const { config, log, jobs, sessions, deliver, promote, remarkable, version } = deps;
+  const { config, log, jobs, sessions, deliver, promote, remarkable, ui, version } = deps;
   const startedAt = Date.now();
 
   /** Parse a POST body as JSON; an empty body is {} (rotate takes no required fields). */
@@ -278,6 +283,107 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
       return;
     }
 
+    // /api/v1/ui/* — generative UI (Stage 31, contracts/generative-ui.md,
+    // additive on the frozen control-api v1 surface). Flag off → 404 for the
+    // WHOLE family: the feature is ABSENT (not 403-disabled) — the contract's
+    // dark posture. Thin doors: naming, validation, versioning, and the
+    // active-pointer invariant all live in src/ui/registry.ts;
+    // UiRegistryError maps to 422 (with the verdict when the rejection is a
+    // failed validation) in the catch below.
+    if (path.startsWith('/api/v1/ui/')) {
+      if (!config.generativeUiEnabled) {
+        respond(res, 404, { ok: false, error: 'not found' });
+        return;
+      }
+
+      // POST /api/v1/ui/validate — body { html }. Dry-run: NEVER writes; the
+      // revise loop uses this so failed attempts consume no version numbers.
+      // Invalid HTML answers 422 with the same { ok:false, error, verdict }
+      // shape the register door uses (so `nightshift ui validate` exits 1).
+      if (method === 'POST' && path === '/api/v1/ui/validate') {
+        let body: unknown;
+        try {
+          body = await readJsonBody(req);
+        } catch {
+          respond(res, 400, { ok: false, error: 'invalid JSON body' });
+          return;
+        }
+        const { html } = body as { html?: unknown };
+        if (typeof html !== 'string') {
+          respond(res, 400, { ok: false, error: 'validate requires "html" (string)' });
+          return;
+        }
+        const verdict = ui.validate(html);
+        if (!verdict.valid) {
+          const summary = verdict.violations.map((v) => `${v.rule}: ${v.detail}`).join('; ');
+          respond(res, 422, { ok: false, error: `ui validation failed — ${summary}`, verdict });
+          return;
+        }
+        respond(res, 200, { ok: true, verdict });
+        return;
+      }
+
+      // POST /api/v1/ui/resources — body { name, html, requestedTools?,
+      // provenance? }: validate → insert as v1, active (next-version install
+      // is Stage 32). On ANY rejection (bad name, taken name, unknown tool,
+      // invalid HTML) nothing is written.
+      if (method === 'POST' && path === '/api/v1/ui/resources') {
+        let body: unknown;
+        try {
+          body = await readJsonBody(req);
+        } catch {
+          respond(res, 400, { ok: false, error: 'invalid JSON body' });
+          return;
+        }
+        const { name, html, requestedTools, provenance } = body as {
+          name?: unknown;
+          html?: unknown;
+          requestedTools?: unknown;
+          provenance?: unknown;
+        };
+        if (typeof name !== 'string' || name === '') {
+          respond(res, 400, { ok: false, error: 'register requires "name" (non-empty string)' });
+          return;
+        }
+        if (typeof html !== 'string' || html === '') {
+          respond(res, 400, { ok: false, error: 'register requires "html" (non-empty string)' });
+          return;
+        }
+        if (
+          requestedTools !== undefined &&
+          (!Array.isArray(requestedTools) || requestedTools.some((t) => typeof t !== 'string'))
+        ) {
+          respond(res, 400, {
+            ok: false,
+            error: '"requestedTools" must be an array of strings when present',
+          });
+          return;
+        }
+        if (provenance !== undefined && typeof provenance !== 'string') {
+          respond(res, 400, { ok: false, error: '"provenance" must be a string when present' });
+          return;
+        }
+        const resource = ui.install({
+          name,
+          html,
+          ...(requestedTools === undefined ? {} : { requestedTools: requestedTools as string[] }),
+          ...(provenance === undefined ? {} : { provenance }),
+        });
+        respond(res, 200, { ok: true, resource });
+        return;
+      }
+
+      // GET /api/v1/ui/resources — the queryable registry: active version per
+      // name, html omitted (htmlBytes carries the size).
+      if (method === 'GET' && path === '/api/v1/ui/resources') {
+        respond(res, 200, { ok: true, resources: ui.list() });
+        return;
+      }
+
+      respond(res, 404, { ok: false, error: 'not found' });
+      return;
+    }
+
     // POST /api/v1/session/rotate — body { reason?: 'manual' }
     if (method === 'POST' && path === '/api/v1/session/rotate') {
       let body: unknown;
@@ -337,6 +443,16 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
         // reMarkable push refused (feature dark) or the rmapi/cloud transport
         // failed (non-zero exit).
         respond(res, err.status, { ok: false, error: err.message });
+        return;
+      }
+      if (err instanceof UiRegistryError) {
+        // Rejected ui install: bad name, unknown requested tool, or invalid
+        // HTML — 422 with the machine-readable verdict when validation failed.
+        respond(res, err.status, {
+          ok: false,
+          error: err.message,
+          ...(err.verdict === undefined ? {} : { verdict: err.verdict }),
+        });
         return;
       }
       if (err instanceof AttachmentError) {
