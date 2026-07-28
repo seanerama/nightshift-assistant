@@ -70,3 +70,40 @@ Ephemeral per-turn UI; nightshift-client changes (live refresh consumes
 Stage 34's emitter later, from the client repo); public web promotion;
 memory-graph integration — hook honored via the queryable registry door; the
 untracked memory-graph contract + stage-30 draft are the owner's, on hold.
+
+## Stage-36 addendum (2026-07-28, Mode B intake): live DoD blocker
+
+**Symptom:** first live DoD run (v0.14.0, flag on, session 84b4442c): the
+owner's "habit tracker" request produced no install; turn killed at the 300s
+cap (journal 20:28:42Z "agent turn timed out"); error reply to owner;
+registry empty.
+
+**Transcript evidence:** the session followed the preamble correctly
+(reuse-first `ui list`, read contract + jobs-v1 example, authored the page),
+then failed every attempt to materialize the HTML: Write to /tmp and to the
+app dir denied; `cat >` heredocs denied ("requires approval"); it then
+burned the remaining turn debugging the denials — the issue-#35
+headless-denial class (denials look like answerable prompts).
+
+**Root cause:** composition gap shipped in Stage 35 — the preamble's loop
+("write the HTML to a temp file") assumes a file-write capability the
+session's containment deliberately lacks (`--allowedTools
+"Bash(nightshift *) …"`, manager.ts:68). `ui validate/install` accept only
+file paths, so the session has NO path to hand HTML to the daemon. Every
+component was individually green; only the live composition could reveal it
+— which is what the DoD cert is for.
+
+**Decision:** ACCEPT as Stage 36 (bug, depends 35): additive stdin form
+(`-`) on `ui validate`/`ui install` + preamble loop rewrite to a single
+allowlisted heredoc command. No sandbox widening, no door/contract/flag
+changes. Contract safety: additive on the frozen generative-ui v1 CLI
+section; assistant-session untouched. Residual risk called out in the spec:
+the claude permission matcher accepting a heredoc-fed allowlisted command is
+CI-unprovable — it is the stage's live-cert exit, with a STOP-and-re-intake
+fallback (drafts dir + ADR) if it denies.
+
+**Rejected alternatives:** writable drafts dir via --add-dir (widens the
+sandbox; needs ADR; keep as fallback); raising the 300s turn cap (symptom,
+not cause); daemon-side authoring door taking inline HTML from a new
+transport (already exists — the door takes { html }; the gap is purely CLI
+input form).
