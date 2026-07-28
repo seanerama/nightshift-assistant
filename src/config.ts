@@ -191,6 +191,13 @@ export interface Config {
   appBind: string[];
   /** App transport listen port (default 3778 — distinct from the daemon's 3777). */
   appPort: number;
+  /**
+   * Master switch for generative UI (Stage 31, contracts/generative-ui.md,
+   * ADRs 0013–0015). Default OFF — with it unset, the /api/v1/ui/* doors 404
+   * (feature absent), the `nightshift ui` verbs refuse, and MCP
+   * resources/list carries no registry rows (byte-identical to Stage 28).
+   */
+  generativeUiEnabled: boolean;
 }
 
 export class ConfigError extends Error {}
@@ -518,6 +525,22 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     }
   }
 
+  // Generative-UI kill-switch (Stage 31): same discipline as the other feature
+  // flags — only exactly "true" enables; "false"/unset stay dark; anything
+  // else fails fast.
+  const generativeUiRaw = env.NIGHTSHIFT_GENERATIVE_UI_ENABLED;
+  if (
+    generativeUiRaw !== undefined &&
+    generativeUiRaw !== '' &&
+    generativeUiRaw !== 'true' &&
+    generativeUiRaw !== 'false'
+  ) {
+    throw new ConfigError(
+      `NIGHTSHIFT_GENERATIVE_UI_ENABLED must be "true" or "false" (got: ${generativeUiRaw})`,
+    );
+  }
+  const generativeUiEnabled = generativeUiRaw === 'true';
+
   return {
     webexBotToken,
     webexWebhookSecret,
@@ -552,5 +575,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     appToken,
     appBind,
     appPort,
+    generativeUiEnabled,
   };
 }

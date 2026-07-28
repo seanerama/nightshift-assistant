@@ -1,0 +1,35 @@
+<!--
+  Known-BAD validator fixture (Stage 31): fails EXACTLY the `single-file`
+  rule — an external <script src> would load a second file.
+  Every other rule must pass, so the verdict pins this one rule id.
+-->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fixture: bad single-file</title>
+<script src="https://cdn.example.com/lib.js"></script>
+<style>
+  body { font: 15px/1.4 system-ui, sans-serif; margin: 12px; }
+  h1 { font-size: 18px; }
+</style>
+</head>
+<body>
+<h1>Hello from a valid resource</h1>
+<p>This static markup renders without any bridge or tool result.</p>
+<script>
+(() => {
+  const bridged = () =>
+    typeof window.ReactNativeWebView === 'object' &&
+    window.ReactNativeWebView !== null &&
+    typeof window.ReactNativeWebView.postMessage === 'function';
+  if (bridged()) {
+    window.ReactNativeWebView.postMessage(
+      JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'ui/ready' }),
+    );
+  }
+})();
+</script>
+</body>
+</html>

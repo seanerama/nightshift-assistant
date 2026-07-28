@@ -35,6 +35,7 @@ import { createRemarkablePusher } from './transport/remarkable.js';
 import { AttachmentError, createSender } from './transport/send.js';
 import { createTransportServer } from './transport/server.js';
 import { createWebexClient } from './transport/webex.js';
+import { createUiRegistry } from './ui/registry.js';
 
 /** How often the in-daemon daily-rotation check runs (only when enabled). */
 const DAILY_CHECK_INTERVAL_MS = 60_000;
@@ -224,6 +225,13 @@ export function createApp(
     home,
   });
 
+  // Generative-UI registry (Stage 31, contracts/generative-ui.md): the ONE
+  // module behind both faces — the /api/v1/ui/* doors and the MCP resource
+  // mapping. Constructed unconditionally (migration 0009 applies either way);
+  // the doors and the MCP list own the NIGHTSHIFT_GENERATIVE_UI_ENABLED gate,
+  // so with the flag off it is dark, dormant state.
+  const uiRegistry = createUiRegistry(db);
+
   const server = createTransportServer({
     config,
     log,
@@ -278,6 +286,7 @@ export function createApp(
           }),
         log,
       }),
+      ui: uiRegistry,
       version: appVersion(),
     }),
   });
@@ -296,7 +305,7 @@ export function createApp(
           files: appSink.files,
           // MCP bridge (Stage 27, ADR 0012): the five tools are thin doors
           // over the SAME jobs/sessions handles the control API above uses.
-          mcp: createAppMcp({ config, log, jobs, sessions, version: appVersion() }),
+          mcp: createAppMcp({ config, log, jobs, sessions, ui: uiRegistry, version: appVersion() }),
           relay: (msg) => sessions.relay(msg),
           version: appVersion(),
         });

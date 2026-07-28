@@ -35,6 +35,16 @@
  * CLIENT repo; the HTML file header records that provenance). @v1 in the uri
  * is the version seam: a breaking dashboard change is a NEW @v2 resource,
  * never an edit (ADR 0012).
+ *
+ * Stage 31 (contracts/generative-ui.md, ADR 0015): when
+ * NIGHTSHIFT_GENERATIVE_UI_ENABLED is on, the registry contributes MORE
+ * resources — one entry per registry name (the ACTIVE version, as
+ * ui://nightshift/<name>@v<N>, text/html) beside the hand-authored jobs
+ * entry, and resources/read serves any exact registered @vN uri (active or
+ * not — a listed client can always read what it saw listed). Their
+ * _meta["ui/tools"] carries granted(name) ∩ requestedTools — [] this stage by
+ * construction (no grant door exists until Stage 33; zero-trust). Flag off:
+ * byte-identical to Stage 28 — the jobs entry only.
  */
 
 import { readFileSync } from 'node:fs';
@@ -54,6 +64,7 @@ import { JobError, type JobRunner } from '../../jobs/runner.js';
 import type { Logger } from '../../log.js';
 import type { SessionManager } from '../../session/manager.js';
 import type { JobStatus, JobSubmit } from '../../types.js';
+import { type UiRegistry, uiResourceUri } from '../../ui/registry.js';
 import { readRawBody } from '../server.js';
 
 /** Mirrors src/transport/api.ts — the job-lifecycle contract's states. */
@@ -68,6 +79,8 @@ export interface AppMcpDeps {
   /** The SAME doors the control API uses (contracts/control-api.md). */
   jobs: JobRunner;
   sessions: SessionManager;
+  /** Stage 31: the registry the resource surface reflects when the flag is on. */
+  ui: UiRegistry;
   version: string;
 }
 
@@ -227,7 +240,7 @@ function normalizeInitialize(message: unknown): unknown {
 }
 
 export function createAppMcp(deps: AppMcpDeps): AppMcp {
-  const { config, jobs, sessions, version } = deps;
+  const { config, jobs, sessions, ui, version } = deps;
   const startedAt = Date.now();
 
   /**
@@ -322,22 +335,56 @@ export function createAppMcp(deps: AppMcpDeps): AppMcp {
           mimeType: 'text/html',
           _meta: uiResourceMeta(),
         },
+        // Stage 31: registry rows (the ACTIVE version per name) join the
+        // hand-authored entry only when the flag is on — off is byte-identical
+        // to Stage 28. _meta["ui/tools"] is the grant intersection: [] this
+        // stage by construction (zero-trust; grants land in Stage 33).
+        ...(config.generativeUiEnabled
+          ? ui.list().map((resource) => ({
+              uri: uiResourceUri(resource.name, resource.version),
+              name: resource.name,
+              description:
+                `Generated single-file UI resource ${resource.name}@v${resource.version} ` +
+                '(generative-ui registry, contracts/generative-ui.md).',
+              mimeType: 'text/html',
+              _meta: { 'ui/tools': resource.grantedTools },
+            }))
+          : []),
       ],
     }));
     server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
-      if (request.params.uri !== UI_RESOURCE_URI) {
-        throw new McpError(ErrorCode.InvalidParams, `unknown resource: ${request.params.uri}`);
+      if (request.params.uri === UI_RESOURCE_URI) {
+        return {
+          contents: [
+            {
+              uri: UI_RESOURCE_URI,
+              mimeType: 'text/html',
+              text: loadUiResourceHtml(),
+              _meta: uiResourceMeta(),
+            },
+          ],
+        };
       }
-      return {
-        contents: [
-          {
-            uri: UI_RESOURCE_URI,
-            mimeType: 'text/html',
-            text: loadUiResourceHtml(),
-            _meta: uiResourceMeta(),
-          },
-        ],
-      };
+      // Stage 31: any exact registered @vN uri (active or not — a listed
+      // client can always read what it saw listed), same _meta rule evaluated
+      // at read time. Flag off: registered uris are as unknown as they were
+      // in Stage 28.
+      if (config.generativeUiEnabled) {
+        const resource = ui.getByUri(request.params.uri);
+        if (resource !== null) {
+          return {
+            contents: [
+              {
+                uri: request.params.uri,
+                mimeType: 'text/html',
+                text: resource.html ?? '',
+                _meta: { 'ui/tools': resource.grantedTools },
+              },
+            ],
+          };
+        }
+      }
+      throw new McpError(ErrorCode.InvalidParams, `unknown resource: ${request.params.uri}`);
     });
     server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const args = (request.params.arguments ?? {}) as Record<string, unknown>;
