@@ -283,7 +283,7 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
       return;
     }
 
-    // /api/v1/ui/* — generative UI (Stage 31, contracts/generative-ui.md,
+    // /api/v1/ui/* — generative UI (Stages 31–32, contracts/generative-ui.md,
     // additive on the frozen control-api v1 surface). Flag off → 404 for the
     // WHOLE family: the feature is ABSENT (not 403-disabled) — the contract's
     // dark posture. Thin doors: naming, validation, versioning, and the
@@ -324,9 +324,11 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
       }
 
       // POST /api/v1/ui/resources — body { name, html, requestedTools?,
-      // provenance? }: validate → insert as v1, active (next-version install
-      // is Stage 32). On ANY rejection (bad name, taken name, unknown tool,
-      // invalid HTML) nothing is written.
+      // provenance? }: validate → insert as the NEXT version (1 for a new
+      // name), made active, prior versions retained (Stage 32, ADR 0015).
+      // On ANY rejection (bad name, unknown tool, invalid HTML) nothing is
+      // written — a failed install against an existing name leaves the
+      // active pointer and version count untouched.
       if (method === 'POST' && path === '/api/v1/ui/resources') {
         let body: unknown;
         try {
@@ -377,6 +379,77 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
       // name, html omitted (htmlBytes carries the size).
       if (method === 'GET' && path === '/api/v1/ui/resources') {
         respond(res, 200, { ok: true, resources: ui.list() });
+        return;
+      }
+
+      // Stage 32 — the versioned sub-resources (contracts/generative-ui.md):
+      //   GET  /api/v1/ui/resources/<name>            → all versions, html omitted
+      //   GET  /api/v1/ui/resources/<name>/<version>  → one version WITH html
+      //   POST /api/v1/ui/resources/<name>/activate   → rollback = re-activation
+      // Unknown name/version → 404. Same path-param style as /api/v1/jobs/<id>.
+      const uiResourceMatch = /^\/api\/v1\/ui\/resources\/([^/]+)(?:\/([^/]+))?$/.exec(path);
+      if (uiResourceMatch !== null) {
+        const name = decodeURIComponent(uiResourceMatch[1] as string);
+        const sub =
+          uiResourceMatch[2] === undefined ? null : decodeURIComponent(uiResourceMatch[2]);
+
+        // POST /api/v1/ui/resources/<name>/activate — body { version }.
+        if (sub === 'activate') {
+          if (method !== 'POST') {
+            respond(res, 404, { ok: false, error: 'not found' });
+            return;
+          }
+          let body: unknown;
+          try {
+            body = await readJsonBody(req);
+          } catch {
+            respond(res, 400, { ok: false, error: 'invalid JSON body' });
+            return;
+          }
+          const { version } = body as { version?: unknown };
+          if (typeof version !== 'number' || !Number.isInteger(version) || version < 1) {
+            respond(res, 400, {
+              ok: false,
+              error: 'activate requires "version" (integer >= 1)',
+            });
+            return;
+          }
+          const resource = ui.activate(name, version);
+          if (resource === null) {
+            respond(res, 404, { ok: false, error: `no such ui resource: ${name}@v${version}` });
+            return;
+          }
+          respond(res, 200, { ok: true, resource });
+          return;
+        }
+
+        // GET /api/v1/ui/resources/<name>/<version> — the one door serving html.
+        if (sub !== null) {
+          if (method !== 'GET' || !/^[1-9][0-9]*$/.test(sub)) {
+            respond(res, 404, { ok: false, error: 'not found' });
+            return;
+          }
+          const resource = ui.get(name, Number.parseInt(sub, 10));
+          if (resource === null) {
+            respond(res, 404, { ok: false, error: `no such ui resource: ${name}@v${sub}` });
+            return;
+          }
+          respond(res, 200, { ok: true, resource });
+          return;
+        }
+
+        // GET /api/v1/ui/resources/<name> — every version, html omitted.
+        if (method !== 'GET') {
+          respond(res, 404, { ok: false, error: 'not found' });
+          return;
+        }
+        const versions = ui.versions(name);
+        if (versions.length === 0) {
+          respond(res, 404, { ok: false, error: `no such ui resource: ${name}` });
+          return;
+        }
+        const active = versions.find((v) => v.active)?.version ?? null;
+        respond(res, 200, { ok: true, name, active, versions });
         return;
       }
 

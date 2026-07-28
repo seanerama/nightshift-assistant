@@ -1,12 +1,14 @@
 /**
- * Stage 31 /api/v1/ui/* doors (contracts/generative-ui.md, additive on
+ * Stages 31–32 /api/v1/ui/* doors (contracts/generative-ui.md, additive on
  * control-api v1) against a real app instance: dry-run validate, register
- * (422 + machine-readable verdict on invalid, NOTHING written), the
- * queryable list, and the gates — NIGHTSHIFT_GENERATIVE_UI_ENABLED off →
- * the WHOLE family 404s (feature absent, not 403-disabled) while the control
- * kill-switch and bearer auth behave exactly as on the rest of the surface.
- * Registry semantics themselves are unit-covered in test/ui-registry.test.ts;
- * the MCP mapping in test/ui-mcp.test.ts.
+ * (422 + machine-readable verdict on invalid, NOTHING written; a taken name
+ * gets the NEXT version), the queryable list, the versioned sub-resources
+ * (show-all, show-one-with-html, activate) with their 404s, and the gates —
+ * NIGHTSHIFT_GENERATIVE_UI_ENABLED off → the WHOLE family 404s (feature
+ * absent, not 403-disabled) while the control kill-switch and bearer auth
+ * behave exactly as on the rest of the surface. Registry semantics themselves
+ * are unit-covered in test/ui-registry.test.ts; the MCP mapping in
+ * test/ui-mcp.test.ts; the full round trip in test/ui-versions.test.ts.
  */
 
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
@@ -104,6 +106,10 @@ describe('generative-ui doors (/api/v1/ui/*, Stage 31)', () => {
         ['POST', '/api/v1/ui/validate'],
         ['POST', '/api/v1/ui/resources'],
         ['GET', '/api/v1/ui/resources'],
+        // Stage 32 doors 404 identically when dark — absent, like the family.
+        ['GET', '/api/v1/ui/resources/some-name'],
+        ['GET', '/api/v1/ui/resources/some-name/1'],
+        ['POST', '/api/v1/ui/resources/some-name/activate'],
       ] as const) {
         const res = await call(method, path, method === 'GET' ? {} : { body: { html: GOOD_HTML } });
         expect(res.status, `${method} ${path}`).toBe(404);
@@ -222,7 +228,7 @@ describe('generative-ui doors (/api/v1/ui/*, Stage 31)', () => {
       expect(await listResources()).toEqual([]);
     });
 
-    it('re-install of a taken name refuses cleanly (Stage 32 scope) — registry uncorrupted', async () => {
+    it('re-install of a taken name assigns the NEXT version, active (Stage 32)', async () => {
       await makeApp();
       expect(
         (
@@ -234,11 +240,12 @@ describe('generative-ui doors (/api/v1/ui/*, Stage 31)', () => {
       const again = await call('POST', '/api/v1/ui/resources', {
         body: { name: 'good-fixture', html: GOOD_HTML },
       });
-      expect(again.status).toBe(422);
-      expect(((await again.json()) as { error: string }).error).toContain('already registered');
-      // UNIQUE holds and nothing changed: still exactly the one active v1.
+      expect(again.status).toBe(200);
+      const { resource } = (await again.json()) as { resource: UiResourceJson };
+      expect([resource.version, resource.active]).toEqual([2, true]);
+      // The list advertises the ACTIVE version only; v1 is retained beneath.
       const listed = await listResources();
-      expect(listed.map((r) => [r.name, r.version, r.active])).toEqual([['good-fixture', 1, true]]);
+      expect(listed.map((r) => [r.name, r.version, r.active])).toEqual([['good-fixture', 2, true]]);
     });
 
     it('body discipline: missing name/html → 400 (shape errors, not registry 422s)', async () => {
@@ -256,6 +263,100 @@ describe('generative-ui doors (/api/v1/ui/*, Stage 31)', () => {
           })
         ).status,
       ).toBe(400);
+    });
+  });
+
+  describe('versioned sub-resources (Stage 32: show / show-one / activate)', () => {
+    /** Two installs of the same name → v1 (inactive) + v2 (active). */
+    const installTwice = async (): Promise<void> => {
+      for (let i = 0; i < 2; i += 1) {
+        const res = await call('POST', '/api/v1/ui/resources', {
+          body: { name: 'good-fixture', html: GOOD_HTML },
+        });
+        expect(res.status).toBe(200);
+      }
+    };
+
+    it('GET /<name> → { ok, name, active, versions } — every version, html omitted', async () => {
+      await makeApp();
+      await installTwice();
+      const res = await call('GET', '/api/v1/ui/resources/good-fixture');
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        ok: boolean;
+        name: string;
+        active: number;
+        versions: UiResourceJson[];
+      };
+      expect(body.ok).toBe(true);
+      expect(body.name).toBe('good-fixture');
+      expect(body.active).toBe(2);
+      expect(body.versions.map((v) => [v.version, v.active])).toEqual([
+        [1, false],
+        [2, true],
+      ]);
+      for (const version of body.versions) expect(version.html).toBeUndefined();
+    });
+
+    it('GET /<name>/<version> → the one record WITH html (the only html-serving door)', async () => {
+      await makeApp();
+      await installTwice();
+      for (const version of [1, 2]) {
+        const res = await call('GET', `/api/v1/ui/resources/good-fixture/${version}`);
+        expect(res.status, `v${version}`).toBe(200);
+        const { resource } = (await res.json()) as { resource: UiResourceJson };
+        expect(resource.version).toBe(version);
+        expect(resource.html).toBe(GOOD_HTML);
+      }
+    });
+
+    it('POST /<name>/activate { version } → rollback; the pointer and list follow', async () => {
+      await makeApp();
+      await installTwice();
+      const res = await call('POST', '/api/v1/ui/resources/good-fixture/activate', {
+        body: { version: 1 },
+      });
+      expect(res.status).toBe(200);
+      const { resource } = (await res.json()) as { resource: UiResourceJson };
+      expect([resource.version, resource.active]).toEqual([1, true]);
+      const listed = await listResources();
+      expect(listed.map((r) => [r.name, r.version])).toEqual([['good-fixture', 1]]);
+    });
+
+    it('404s: unknown name on show, unknown version on show-one and activate', async () => {
+      await makeApp();
+      await installTwice();
+      expect((await call('GET', '/api/v1/ui/resources/no-such-name')).status).toBe(404);
+      expect((await call('GET', '/api/v1/ui/resources/good-fixture/3')).status).toBe(404);
+      expect((await call('GET', '/api/v1/ui/resources/good-fixture/zero')).status).toBe(404);
+      const res = await call('POST', '/api/v1/ui/resources/no-such-name/activate', {
+        body: { version: 1 },
+      });
+      expect(res.status).toBe(404);
+      const badVersion = await call('POST', '/api/v1/ui/resources/good-fixture/activate', {
+        body: { version: 3 },
+      });
+      expect(badVersion.status).toBe(404);
+      // Nothing moved: v2 is still the active version.
+      const listed = await listResources();
+      expect(listed.map((r) => [r.name, r.version])).toEqual([['good-fixture', 2]]);
+    });
+
+    it('activate body discipline: missing/non-integer/sub-1 version → 400', async () => {
+      await makeApp();
+      await installTwice();
+      for (const body of [{}, { version: '1' }, { version: 1.5 }, { version: 0 }]) {
+        const res = await call('POST', '/api/v1/ui/resources/good-fixture/activate', { body });
+        expect(res.status, JSON.stringify(body)).toBe(400);
+      }
+    });
+
+    it('wrong method on the sub-resources → 404 (path style matches /api/v1/jobs/<id>)', async () => {
+      await makeApp();
+      await installTwice();
+      expect((await call('POST', '/api/v1/ui/resources/good-fixture')).status).toBe(404);
+      expect((await call('POST', '/api/v1/ui/resources/good-fixture/1')).status).toBe(404);
+      expect((await call('GET', '/api/v1/ui/resources/good-fixture/activate')).status).toBe(404);
     });
   });
 });

@@ -1,12 +1,16 @@
 /**
- * Stage 31 UI registry module (contracts/generative-ui.md, ADR 0015) against
- * a migrated in-memory DB: install assigns v1 active for a new name, refuses
- * a taken name cleanly (next-version install is Stage 32) with NOTHING
- * written, refuses reserved/malformed names and unknown requested tools, and
- * NEVER writes on failed validation (there is no unvalidated insert path).
- * The schema invariant UNIQUE(name, version) is proven live by a raw
- * duplicate insert. The doors over this module are covered in
- * test/ui-api.test.ts; the MCP mapping in test/ui-mcp.test.ts.
+ * Stages 31–32 UI registry module (contracts/generative-ui.md, ADR 0015)
+ * against a migrated in-memory DB: install assigns v1 active for a new name
+ * and the NEXT version (active, prior retained) for a taken one; activate()
+ * flips the pointer to any retained version (rollback = re-activation);
+ * versions()/get() expose the history; reserved/malformed names and unknown
+ * requested tools refuse; and NOTHING is written on failed validation (there
+ * is no unvalidated insert path) — including against an existing name, whose
+ * active pointer and version count stay untouched. The invariants
+ * UNIQUE(name, version) and one-active-row-per-name are proven at the SQL
+ * level. The doors over this module are covered in test/ui-api.test.ts; the
+ * MCP mapping in test/ui-mcp.test.ts; the full v1→v2→rollback round trip
+ * over MCP in test/ui-versions.test.ts.
  */
 
 import { readFileSync } from 'node:fs';
@@ -48,6 +52,16 @@ describe('ui registry (Stage 31, contracts/generative-ui.md)', () => {
 
   const rowCount = (): number =>
     (db.prepare('SELECT COUNT(*) AS n FROM ui_resources').get() as { n: number }).n;
+
+  /** SQL-level invariant (contract): never two active rows for one name. */
+  const assertOneActivePerName = (): void => {
+    const offenders = db
+      .prepare(
+        'SELECT name, COUNT(*) AS n FROM ui_resources WHERE active = 1 GROUP BY name HAVING n > 1',
+      )
+      .all();
+    expect(offenders).toEqual([]);
+  };
 
   it('installs a valid page as version 1, active, with the frozen record shape', () => {
     const record = registry.install({
@@ -91,15 +105,75 @@ describe('ui registry (Stage 31, contracts/generative-ui.md)', () => {
     expect(registry.getByUri('not-a-uri')).toBeNull();
   });
 
-  it('refuses a taken name cleanly — next-version install is Stage 32 — and writes nothing', () => {
+  it('install on a taken name assigns the next version, active — v1 retained (Stage 32)', () => {
     registry.install({ name: 'good-page', html: GOOD_HTML });
-    expect(() => registry.install({ name: 'good-page', html: GOOD_HTML })).toThrowError(
-      /already registered.*Stage 32/s,
-    );
-    // No corruption: still exactly the one v1 row, still active.
-    expect(rowCount()).toBe(1);
+    const v2 = registry.install({ name: 'good-page', html: GOOD_HTML, provenance: 'iteration' });
+    expect(v2.version).toBe(2);
+    expect(v2.active).toBe(true);
+    // Exactly two rows; the active pointer moved to v2 and ONLY v2.
+    expect(rowCount()).toBe(2);
+    assertOneActivePerName();
+    expect(registry.list().map((r) => [r.name, r.version, r.active])).toEqual([
+      ['good-page', 2, true],
+    ]);
+    // v1 is retained and still readable by exact uri (rollback needs the bytes).
+    expect(registry.getByUri(uiResourceUri('good-page', 1))?.html).toBe(GOOD_HTML);
+    expect(registry.versions('good-page').map((r) => [r.version, r.active])).toEqual([
+      [1, false],
+      [2, true],
+    ]);
+  });
+
+  it('activate() flips the pointer back — rollback is re-activation, never deletion', () => {
+    registry.install({ name: 'good-page', html: GOOD_HTML });
+    registry.install({ name: 'good-page', html: GOOD_HTML });
+    const rolledBack = registry.activate('good-page', 1);
+    expect(rolledBack?.version).toBe(1);
+    expect(rolledBack?.active).toBe(true);
+    assertOneActivePerName();
+    expect(registry.list().map((r) => [r.name, r.version])).toEqual([['good-page', 1]]);
+    // Both versions still present and readable — nothing was deleted.
+    expect(rowCount()).toBe(2);
+    expect(registry.getByUri(uiResourceUri('good-page', 2))?.html).toBe(GOOD_HTML);
+    // Activating the already-active version is a harmless no-op flip.
+    expect(registry.activate('good-page', 1)?.active).toBe(true);
+    assertOneActivePerName();
+  });
+
+  it('activate() returns null for an unknown name or version — pointer untouched', () => {
+    registry.install({ name: 'good-page', html: GOOD_HTML });
+    expect(registry.activate('good-page', 2)).toBeNull();
+    expect(registry.activate('no-such-page', 1)).toBeNull();
     expect(registry.list().map((r) => [r.name, r.version, r.active])).toEqual([
       ['good-page', 1, true],
+    ]);
+    assertOneActivePerName();
+  });
+
+  it('versions()/get(): full ascending history without html; one version with html', () => {
+    expect(registry.versions('no-such-page')).toEqual([]);
+    expect(registry.get('no-such-page', 1)).toBeNull();
+    registry.install({ name: 'good-page', html: GOOD_HTML });
+    registry.install({ name: 'good-page', html: GOOD_HTML });
+    const versions = registry.versions('good-page');
+    expect(versions.map((r) => r.version)).toEqual([1, 2]);
+    for (const record of versions) expect(record.html).toBeUndefined();
+    expect(registry.get('good-page', 1)?.html).toBe(GOOD_HTML);
+    expect(registry.get('good-page', 3)).toBeNull();
+  });
+
+  it('failed install against an EXISTING name leaves pointer and version count untouched', () => {
+    registry.install({ name: 'good-page', html: GOOD_HTML });
+    registry.install({ name: 'good-page', html: GOOD_HTML });
+    expect(() => registry.install({ name: 'good-page', html: BAD_HTML })).toThrowError(
+      /validation failed/,
+    );
+    // Transactionality: still exactly two rows, v2 still the one active row.
+    expect(rowCount()).toBe(2);
+    assertOneActivePerName();
+    expect(registry.versions('good-page').map((r) => [r.version, r.active])).toEqual([
+      [1, false],
+      [2, true],
     ]);
   });
 
