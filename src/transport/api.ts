@@ -26,6 +26,7 @@ import { type Promoter, PromotionError } from '../promotion/pipeline.js';
 import type { SessionManager } from '../session/manager.js';
 import type { JobStatus, JobSubmit } from '../types.js';
 import { type UiRegistry, UiRegistryError } from '../ui/registry.js';
+import type { UiState } from '../ui/state.js';
 import { DeliverError, type Deliverer } from './deliver.js';
 import { RemarkableError, type RemarkablePusher } from './remarkable.js';
 import { AttachmentError } from './send.js';
@@ -46,6 +47,8 @@ export interface ApiDeps {
   remarkable: RemarkablePusher;
   /** Stage 31 (additive on control-api v1): the /api/v1/ui/* doors. */
   ui: UiRegistry;
+  /** Stage 37 (contracts/ui-state.md): the /api/v1/ui/state/<name> doors. */
+  uiState: UiState;
   /**
    * Stage 34 (ADR 0015): called AFTER each committed registry mutation
    * (register / activate / grant / revoke) so the shared UiNotifyHub can
@@ -75,8 +78,19 @@ function tokenMatches(header: string | undefined, expected: string): boolean {
 }
 
 export function createApiHandler(deps: ApiDeps): ApiHandler {
-  const { config, log, jobs, sessions, deliver, promote, remarkable, ui, onUiMutate, version } =
-    deps;
+  const {
+    config,
+    log,
+    jobs,
+    sessions,
+    deliver,
+    promote,
+    remarkable,
+    ui,
+    uiState,
+    onUiMutate,
+    version,
+  } = deps;
   const startedAt = Date.now();
 
   /**
@@ -478,6 +492,55 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
         }
         const active = versions.find((v) => v.active)?.version ?? null;
         respond(res, 200, { ok: true, name, active, versions });
+        return;
+      }
+
+      // Stage 37 — the per-name state document (contracts/ui-state.md v1):
+      //   GET  /api/v1/ui/state/<name>  → { ok, name, value, updatedAt }
+      //                                   (value AND updatedAt null before
+      //                                   the first set)
+      //   POST /api/v1/ui/state/<name>  — body { value } → { ok, name,
+      //                                   updatedAt } (full replace — the
+      //                                   assistant's seeding door)
+      // A DIFFERENT sub-path from /resources/<name>(/<v>|/activate) — neither
+      // regex can swallow the other. Thin doors over src/ui/state.ts:
+      // unknown name → 404, oversize/non-JSON → 422, both via UiRegistryError
+      // in the outer catch; body-shape errors → 400 here.
+      const uiStateMatch = /^\/api\/v1\/ui\/state\/([^/]+)$/.exec(path);
+      if (uiStateMatch !== null) {
+        const name = decodeURIComponent(uiStateMatch[1] as string);
+
+        if (method === 'GET') {
+          respond(res, 200, { ok: true, ...uiState.get(name) });
+          return;
+        }
+
+        if (method === 'POST') {
+          let body: unknown;
+          try {
+            body = await readJsonBody(req);
+          } catch {
+            respond(res, 400, { ok: false, error: 'invalid JSON body' });
+            return;
+          }
+          if (
+            typeof body !== 'object' ||
+            body === null ||
+            Array.isArray(body) ||
+            !('value' in body)
+          ) {
+            respond(res, 400, {
+              ok: false,
+              error: 'state set requires body { value } (value: any JSON document)',
+            });
+            return;
+          }
+          const set = uiState.set(name, (body as { value: unknown }).value);
+          respond(res, 200, { ok: true, name: set.name, updatedAt: set.updatedAt });
+          return;
+        }
+
+        respond(res, 404, { ok: false, error: 'not found' });
         return;
       }
 

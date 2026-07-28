@@ -175,7 +175,10 @@ describe('generative-ui MCP mapping (/app/v1/mcp, Stage 31)', () => {
       expect(res.body.error?.message).toContain('unknown resource');
     });
 
-    it('the tools surface is untouched: still exactly the five Stage 27 doors', async () => {
+    it('the tools surface (flag on): the five Stage 27 doors + the two Stage 37 state tools', async () => {
+      // Stage 37 pin update (deliberate): this file runs flag ON, where the
+      // catalog is now five + two (flag OFF stays exactly five — pinned in
+      // test/app-mcp.test.ts). Installing pages still never moves it.
       await makeApp();
       await installGood();
       const res = await rpc('tools/list');
@@ -185,6 +188,8 @@ describe('generative-ui MCP mapping (/app/v1/mcp, Stage 31)', () => {
         'jobs_submit',
         'jobs_kill',
         'session_rotate',
+        'ui_state_get',
+        'ui_state_set',
       ]);
     });
   });

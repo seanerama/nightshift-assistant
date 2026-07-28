@@ -23,8 +23,15 @@ import { makeConfig, makeTestLogger, WORKER_STUB, waitFor } from './helpers.js';
 const APP_TOKEN = 'test-app-mcp-token';
 const API_TOKEN = 'test-api-token';
 
-/** The frozen five, in advertised order — status FIRST (no-arg, read-only). */
+/** The certified five, in advertised order — status FIRST (no-arg, read-only).
+ * Stage 37 made the catalog flag-conditional: this const is the EXACT flag-off
+ * catalog (byte-identical to the certified surface), and the flag-on catalog
+ * appends STATE_TOOLS — both pinned below (a deliberate Stage 37 pin update:
+ * "exactly five" became "exactly five per flag state"). */
 const FIVE_TOOLS = ['status', 'jobs_list', 'jobs_submit', 'jobs_kill', 'session_rotate'];
+
+/** Stage 37 (contracts/ui-state.md): appended AFTER the five, flag on only. */
+const STATE_TOOLS = ['ui_state_get', 'ui_state_set'];
 
 /** contracts/job-lifecycle.md — the exact JobRecord keys (no more, no fewer). */
 const JOB_RECORD_KEYS = [
@@ -202,17 +209,43 @@ describe('app MCP endpoint (/app/v1/mcp, Stage 27)', () => {
     });
   });
 
-  describe('tools/list', () => {
-    it('advertises EXACTLY the five doors, status first, each with a schema', async () => {
+  describe('tools/list (Stage 37: a function of the generative-ui flag)', () => {
+    it('flag OFF (default): EXACTLY the certified five, status first, each with a schema', async () => {
       await makeApp();
       const res = await rpc('tools/list');
       expect(res.status).toBe(200);
       const tools = res.body.result?.tools ?? [];
+      // The certified surface, byte-identical: exact names, exact order —
+      // and NO ui-state tools anywhere in the list.
       expect(tools.map((t) => t.name)).toEqual(FIVE_TOOLS);
       for (const tool of tools) {
         expect(tool.description).toBeTruthy();
         expect(tool.inputSchema).toMatchObject({ type: 'object' });
       }
+    });
+
+    it('flag ON: the five + ui_state_get/ui_state_set appended — status still first', async () => {
+      await makeApp({ generativeUiEnabled: true });
+      const res = await rpc('tools/list');
+      expect(res.status).toBe(200);
+      const tools = res.body.result?.tools ?? [];
+      expect(tools.map((t) => t.name)).toEqual([...FIVE_TOOLS, ...STATE_TOOLS]);
+      for (const tool of tools) {
+        expect(tool.description).toBeTruthy();
+        expect(tool.inputSchema).toMatchObject({ type: 'object' });
+      }
+    });
+
+    it('flag OFF: the five entries are IDENTICAL to what flag ON advertises for them', async () => {
+      // Byte-identity guard: turning the flag on must only APPEND — the
+      // certified five entries themselves may not change in any way.
+      await makeApp();
+      const off = (await rpc('tools/list')).body.result?.tools ?? [];
+      await app?.close();
+      app = null;
+      await makeApp({ generativeUiEnabled: true });
+      const on = (await rpc('tools/list')).body.result?.tools ?? [];
+      expect(JSON.stringify(on.slice(0, FIVE_TOOLS.length))).toBe(JSON.stringify(off));
     });
   });
 

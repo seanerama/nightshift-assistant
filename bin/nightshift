@@ -84,6 +84,14 @@ Usage:
                                    Revoke a granted tool — immediate across
                                    all versions of the name; the grant row is
                                    kept (revoked, never deleted)
+  nightshift ui state <name>       Read the resource's persisted state
+                                   document (per-name JSON; value and
+                                   updatedAt are null before the first set;
+                                   --json for the raw body)
+  nightshift ui state <name> --set '<json>'
+                                   Replace the WHOLE state document with the
+                                   given JSON (any JSON value, serialized
+                                   <= 64 KB; full replace, last-write-wins)
   nightshift rotate                Rotate the conversational session (manual)
   nightshift status                Daemon status (version, uptime, session, job counts)
 
@@ -260,6 +268,16 @@ function formatUiGrant(g) {
   ].join('\n');
 }
 
+/** Readable state block (contracts/ui-state.md get shape). Never-set is the
+ * null/null pair; a deliberately-set null value still shows its updatedAt. */
+function formatUiState(s) {
+  return [
+    `name:      ${s.name}`,
+    `updated:   ${s.updatedAt ?? '— (never set)'}`,
+    `value:     ${s.updatedAt === null ? '(none)' : JSON.stringify(s.value)}`,
+  ].join('\n');
+}
+
 /** Readable ui resources table. */
 function formatUiList(resources) {
   if (resources.length === 0) return '(no ui resources)';
@@ -303,6 +321,7 @@ function parseArgs(argv) {
     '--tools',
     '--provenance',
     '--approval',
+    '--set',
   ]);
   const options = {};
   const positionals = [];
@@ -575,6 +594,33 @@ async function runCommand(conn, parsed) {
         }
         const result = await callApi(conn, 'POST', '/api/v1/ui/grants/revoke', { name, tool });
         return { result, render: (r) => `Revoked.\n${formatUiGrant(r.grant)}` };
+      }
+      if (sub === 'state') {
+        // Stage 37 (contracts/ui-state.md): the per-name state document.
+        // Without --set: GET (read). With --set '<json>': POST (full replace)
+        // — the JSON is parsed HERE so a typo fails locally, like --params.
+        const name = positionals[1];
+        if (name === undefined) fail(`ui state requires a name\n\n${USAGE}`);
+        if (options.set !== undefined) {
+          let value;
+          try {
+            value = JSON.parse(options.set);
+          } catch (err) {
+            fail(`--set is not valid JSON: ${err.message}`);
+          }
+          const result = await callApi(
+            conn,
+            'POST',
+            `/api/v1/ui/state/${encodeURIComponent(name)}`,
+            { value },
+          );
+          return {
+            result,
+            render: (r) => `State set.\nname:      ${r.name}\nupdated:   ${r.updatedAt}`,
+          };
+        }
+        const result = await callApi(conn, 'GET', `/api/v1/ui/state/${encodeURIComponent(name)}`);
+        return { result, render: formatUiState };
       }
       fail(`unknown ui subcommand: ${sub ?? '(none)'}\n\n${USAGE}`);
       break;

@@ -22,10 +22,14 @@ export const UI_NAME_RE = /^[a-z][a-z0-9-]{1,39}$/;
 export const RESERVED_UI_NAMES: readonly string[] = ['jobs'];
 
 /**
- * The five frozen MCP tool names requestedTools may reference — mirrors the
- * TOOLS catalog in src/transport/app/mcp.ts (frozen surface, ADR 0012; the
- * list is pinned by test/app-mcp.test.ts). Duplicated here rather than
- * imported so this module never depends on the MCP SDK.
+ * The MCP tool names requestedTools may reference — mirrors the tool catalog
+ * in src/transport/app/mcp.ts (frozen surface, ADR 0012; the list is pinned
+ * by test/app-mcp.test.ts): the certified five, plus the two Stage 37
+ * ui-state tools (contracts/ui-state.md, ADR 0016 — advertised on the wire
+ * only when NIGHTSHIFT_GENERATIVE_UI_ENABLED is on, but always requestable/
+ * grantable here: this whole module is reachable only through flag-gated
+ * doors). Duplicated rather than imported so this module never depends on
+ * the MCP SDK.
  */
 export const MCP_TOOL_NAMES: readonly string[] = [
   'status',
@@ -33,6 +37,8 @@ export const MCP_TOOL_NAMES: readonly string[] = [
   'jobs_submit',
   'jobs_kill',
   'session_rotate',
+  'ui_state_get',
+  'ui_state_set',
 ];
 
 /** contracts/generative-ui.md §Schema — the frozen record shape. */
