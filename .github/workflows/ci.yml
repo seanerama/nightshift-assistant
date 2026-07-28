@@ -50,3 +50,62 @@ jobs:
         run: npm run lint
       - name: Test
         run: npm test
+  # Stage 24 (contracts/app-ingress.md, ADR 0009): agent-app-conformance exit 0
+  # against the REAL daemon is the only definition of done for the app surface.
+  # Standing certification gate for stages 26–28 — every later app stage
+  # inherits this job. The daemon boots with dummy Webex env (startup validates
+  # presence, not connectivity — nothing calls out until a webhook arrives) and
+  # the committed agent stub as the conversational binary, so the chat triad
+  # exercises the real relay seam without a live model.
+  conformance:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install (locked)
+        run: npm ci
+      - name: Build
+        run: npm run build
+      - name: Run agent-app-conformance against the daemon (require exit 0)
+        run: |
+          set -euo pipefail
+          TOKEN="$(node -p "require('node:crypto').randomBytes(24).toString('hex')")"
+          SCRATCH="$(mktemp -d)"
+          export NIGHTSHIFT_ENABLED=true
+          export WEBEX_BOT_TOKEN=ci-dummy-bot-token
+          export WEBEX_WEBHOOK_SECRET=ci-dummy-webhook-secret
+          export WEBEX_OWNER_PERSON_ID=ci-owner-person-id
+          export NIGHTSHIFT_DB_PATH="$SCRATCH/nightshift.db"
+          export NIGHTSHIFT_AGENT_BIN="$PWD/test/fixtures/agent-stub.cjs"
+          export APP_TRANSPORT_ENABLED=true
+          export NIGHTSHIFT_APP_TOKEN="$TOKEN"
+          export NIGHTSHIFT_APP_PORT=3778
+          node dist/index.js > "$SCRATCH/daemon.log" 2>&1 &
+          DAEMON_PID=$!
+          trap 'kill "$DAEMON_PID" 2>/dev/null || true' EXIT
+          for i in $(seq 1 100); do
+            if curl -fsS -H "Authorization: Bearer $TOKEN" \
+                "http://127.0.0.1:3778/app/v1/health" > /dev/null 2>&1; then
+              break
+            fi
+            if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
+              echo "daemon exited before becoming healthy"
+              cat "$SCRATCH/daemon.log"
+              exit 1
+            fi
+            if [ "$i" = "100" ]; then
+              echo "daemon never became healthy"
+              cat "$SCRATCH/daemon.log"
+              exit 1
+            fi
+            sleep 0.2
+          done
+          if ! npx agent-app-conformance http://127.0.0.1:3778 \
+              --token "$TOKEN" --person-id ci-owner-person-id; then
+            echo "--- daemon log ---"
+            cat "$SCRATCH/daemon.log"
+            exit 1
+          fi

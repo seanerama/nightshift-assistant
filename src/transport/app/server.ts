@@ -279,7 +279,9 @@ export function createAppTransport(deps: AppTransportDeps): AppTransport {
       respond(res, 200, {
         ok: true,
         version,
-        uptimeSec: Math.floor((Date.now() - startedAt) / 1000),
+        // Clamped: health.json requires uptimeSec >= 0, and a wall-clock
+        // adjustment (NTP step, VM resume) can briefly make the delta negative.
+        uptimeSec: Math.max(0, Math.floor((Date.now() - startedAt) / 1000)),
       });
       return;
     }
