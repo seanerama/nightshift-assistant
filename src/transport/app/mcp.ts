@@ -25,16 +25,29 @@
  *     initialize; the pinned contract treats it as optional (its harness never
  *     sends it). Missing fields are filled with neutral defaults — provided
  *     values are NEVER overridden.
+ *
+ * Stage 28 adds the resources half (mcp-apps-ui): ONE UI resource,
+ * ui://nightshift/jobs@v1 — a single self-contained HTML jobs dashboard
+ * (src/transport/app/resources/jobs-v1.html) served verbatim as text/html.
+ * Its resource descriptor carries _meta["ui/tools"] = ["jobs_list",
+ * "jobs_kill", "jobs_submit"] — the allowlist the client shell derives per
+ * nightshift-client/contracts/ui-bridge.md (the convention lives in the
+ * CLIENT repo; the HTML file header records that provenance). @v1 in the uri
+ * is the version seam: a breaking dashboard change is a NEW @v2 resource,
+ * never an edit (ADR 0012).
  */
 
+import { readFileSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import {
   CallToolRequestSchema,
   ErrorCode,
+  ListResourcesRequestSchema,
   ListToolsRequestSchema,
   McpError,
+  ReadResourceRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import type { Config } from '../../config.js';
 import { JobError, type JobRunner } from '../../jobs/runner.js';
@@ -143,6 +156,35 @@ const TOOLS = [
     },
   },
 ];
+
+/** The one UI resource (Stage 28, ADR 0012). Naming: ui://<agent>/<name>@v<N>. */
+const UI_RESOURCE_URI = 'ui://nightshift/jobs@v1';
+
+/**
+ * The dashboard's callable-tool declaration, carried as `_meta["ui/tools"]`
+ * on the resource DESCRIPTOR (resources/list) — the location the client
+ * shell's allowlist derivation reads (nightshift-client/contracts/ui-bridge.md
+ * §Consumes; `_meta` is the MCP spec's extension point on descriptors) — and
+ * repeated on the resources/read contents so the declaration survives a read.
+ * Exactly these three names, referencing TOOLS entries above by exact name: a
+ * rename there breaks this allowlist, which is why those names are frozen.
+ */
+const uiResourceMeta = (): Record<string, unknown> => ({
+  'ui/tools': ['jobs_list', 'jobs_kill', 'jobs_submit'],
+});
+
+/**
+ * The dashboard HTML, read once and served verbatim. The file ships beside
+ * the compiled module (the build copies src/transport/app/resources/ into
+ * dist/), so import.meta.url resolves it in both src (vitest) and dist runs.
+ */
+let uiResourceHtml: string | null = null;
+function loadUiResourceHtml(): string {
+  if (uiResourceHtml === null) {
+    uiResourceHtml = readFileSync(new URL('./resources/jobs-v1.html', import.meta.url), 'utf8');
+  }
+  return uiResourceHtml;
+}
 
 /** First value of a possibly-repeated header. */
 function single(value: string | string[] | undefined): string | undefined {
@@ -266,9 +308,37 @@ export function createAppMcp(deps: AppMcpDeps): AppMcp {
   function buildServer(): Server {
     const server = new Server(
       { name: 'nightshift-assistant', version },
-      { capabilities: { tools: {} } },
+      { capabilities: { tools: {}, resources: {} } },
     );
     server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
+    server.setRequestHandler(ListResourcesRequestSchema, async () => ({
+      resources: [
+        {
+          uri: UI_RESOURCE_URI,
+          name: 'jobs',
+          description:
+            'Jobs dashboard (single-file HTML): list, status filter, kill, submit — driven ' +
+            'entirely through the declared ui/tools via the ui-bridge postMessage protocol.',
+          mimeType: 'text/html',
+          _meta: uiResourceMeta(),
+        },
+      ],
+    }));
+    server.setRequestHandler(ReadResourceRequestSchema, async (request) => {
+      if (request.params.uri !== UI_RESOURCE_URI) {
+        throw new McpError(ErrorCode.InvalidParams, `unknown resource: ${request.params.uri}`);
+      }
+      return {
+        contents: [
+          {
+            uri: UI_RESOURCE_URI,
+            mimeType: 'text/html',
+            text: loadUiResourceHtml(),
+            _meta: uiResourceMeta(),
+          },
+        ],
+      };
+    });
     server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const args = (request.params.arguments ?? {}) as Record<string, unknown>;
       try {

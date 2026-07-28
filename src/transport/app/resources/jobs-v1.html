@@ -1,0 +1,471 @@
+<!--
+  ui://nightshift/jobs@v1 — single-file jobs dashboard (Stage 28, ADR 0012).
+
+  PROVENANCE: this file is written against the ui-bridge convention defined in
+  the CLIENT repo — nightshift-client/contracts/ui-bridge.md (frozen v1). That
+  contract, not this repo, defines what resource HTML may do:
+
+    - The ONLY channel out of this page is postMessage JSON-RPC 2.0:
+      resource → shell via window.ReactNativeWebView.postMessage(JSON string);
+      shell → resource via a dispatched `message` event whose data is a JSON
+      string. Methods used here: tools/call (requests), ui/ready (signal).
+      The shell pushes ui/theme notifications (scheme + safe-area insets).
+    - The shell only forwards tools/call for tools on this resource's
+      allowlist, which the app derives from the resource descriptor's
+      _meta["ui/tools"] (declared server-side in src/transport/app/mcp.ts as
+      ["jobs_list", "jobs_kill", "jobs_submit"] — exactly the tools used here).
+    - HARD constraints (enforced by test/app-ui-resource.test.ts): no network,
+      no storage, no cookies, no external references — one self-contained file.
+    - RENDER DEGRADABLE: opened standalone with no bridge answering, this page
+      shows a static shell with a "tools unavailable" state — never a blank
+      page, never an uncaught error.
+
+  Versioning: @v1 in the uri is the seam — a breaking dashboard change is a
+  NEW ui://nightshift/jobs@v2 resource, never an edit (ADR 0012).
+-->
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nightshift jobs</title>
+<style>
+  :root {
+    --safe-top: 0px;
+    --safe-right: 0px;
+    --safe-bottom: 0px;
+    --safe-left: 0px;
+    --bg: #f5f6f8;
+    --panel: #ffffff;
+    --text: #1a2028;
+    --muted: #66707d;
+    --line: #dde2e8;
+    --accent: #2563eb;
+    --accent-text: #ffffff;
+    --danger: #b42318;
+    --danger-text: #ffffff;
+    --ok: #067647;
+    --warn: #b54708;
+    color-scheme: light dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12161c;
+      --panel: #1a2028;
+      --text: #e6e9ed;
+      --muted: #98a2b3;
+      --line: #2b3440;
+      --accent: #528bff;
+      --accent-text: #0b0f14;
+      --danger: #f97066;
+      --danger-text: #12161c;
+      --ok: #47cd89;
+      --warn: #f7b27a;
+    }
+  }
+  :root[data-theme="light"] {
+    --bg: #f5f6f8; --panel: #ffffff; --text: #1a2028; --muted: #66707d;
+    --line: #dde2e8; --accent: #2563eb; --accent-text: #ffffff;
+    --danger: #b42318; --danger-text: #ffffff; --ok: #067647; --warn: #b54708;
+  }
+  :root[data-theme="dark"] {
+    --bg: #12161c; --panel: #1a2028; --text: #e6e9ed; --muted: #98a2b3;
+    --line: #2b3440; --accent: #528bff; --accent-text: #0b0f14;
+    --danger: #f97066; --danger-text: #12161c; --ok: #47cd89; --warn: #f7b27a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: calc(12px + var(--safe-top)) calc(12px + var(--safe-right))
+             calc(12px + var(--safe-bottom)) calc(12px + var(--safe-left));
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  h1 { font-size: 18px; margin: 0; }
+  header { display: flex; align-items: baseline; gap: 10px; margin-bottom: 12px; }
+  header .sub { color: var(--muted); font-size: 12px; }
+  #banner {
+    display: none;
+    border: 1px solid var(--line);
+    border-left: 4px solid var(--warn);
+    background: var(--panel);
+    border-radius: 8px;
+    padding: 10px 12px;
+    margin-bottom: 12px;
+    font-size: 14px;
+  }
+  #banner.on { display: block; }
+  section {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 12px;
+    margin-bottom: 12px;
+  }
+  form .row { margin-bottom: 8px; }
+  form label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 3px; }
+  .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .toolbar label { color: var(--muted); font-size: 13px; }
+  select, input, textarea, button {
+    font: inherit;
+    color: var(--text);
+    background: var(--bg);
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    padding: 6px 9px;
+  }
+  textarea { width: 100%; min-height: 64px; resize: vertical; }
+  input { width: 100%; }
+  button { cursor: pointer; }
+  button:disabled { opacity: 0.5; cursor: default; }
+  button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  button.danger { background: var(--danger); color: var(--danger-text); border-color: var(--danger); }
+  .table-wrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  th, td { text-align: left; padding: 7px 9px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+  td.title-cell { max-width: 320px; overflow: hidden; text-overflow: ellipsis; }
+  .status { font-weight: 600; }
+  .status.queued { color: var(--muted); }
+  .status.running { color: var(--accent); }
+  .status.succeeded { color: var(--ok); }
+  .status.failed, .status.killed { color: var(--danger); }
+  #empty { color: var(--muted); padding: 8px 2px; display: none; }
+  #note { min-height: 20px; font-size: 13px; color: var(--muted); margin-top: 4px; }
+  #note.err { color: var(--danger); }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  @media (max-width: 520px) { .grid2 { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Nightshift jobs</h1>
+  <span class="sub">ui://nightshift/jobs@v1</span>
+</header>
+
+<div id="banner" role="status">
+  <strong>Tools unavailable.</strong>
+  This dashboard is rendered outside the app shell, so no ui-bridge is
+  answering. The static shell below is display-only; job data, kill, and
+  submit need the bridge (nightshift-client/contracts/ui-bridge.md).
+</div>
+
+<section>
+  <div class="toolbar">
+    <label for="filter">Status</label>
+    <select id="filter">
+      <option value="">all</option>
+      <option value="queued">queued</option>
+      <option value="running">running</option>
+      <option value="succeeded">succeeded</option>
+      <option value="failed">failed</option>
+      <option value="killed">killed</option>
+    </select>
+    <button id="refresh" class="primary" type="button">Refresh</button>
+    <span id="note"></span>
+  </div>
+  <div class="table-wrap">
+    <table aria-label="jobs">
+      <thead>
+        <tr><th>Id</th><th>Type</th><th>Title</th><th>Status</th><th>Created</th><th></th></tr>
+      </thead>
+      <tbody id="jobs"></tbody>
+    </table>
+  </div>
+  <div id="empty">No jobs.</div>
+</section>
+
+<section>
+  <h1 style="font-size:15px;margin-bottom:8px;">Submit a job</h1>
+  <form id="submit-form">
+    <div class="grid2">
+      <div class="row">
+        <label for="f-type">Type</label>
+        <input id="f-type" value="test" required>
+      </div>
+      <div class="row">
+        <label for="f-title">Title</label>
+        <input id="f-title" placeholder="human title" required>
+      </div>
+    </div>
+    <div class="row">
+      <label for="f-instruction">Instruction</label>
+      <textarea id="f-instruction" placeholder="the worker session's task" required></textarea>
+    </div>
+    <div class="row">
+      <label for="f-workdir">Workdir</label>
+      <input id="f-workdir" placeholder="/absolute/path" required>
+    </div>
+    <button id="f-submit" class="primary" type="submit">Submit job</button>
+  </form>
+</section>
+
+<script>
+(() => {
+  // ---- ui-bridge client (nightshift-client/contracts/ui-bridge.md v1) ----
+  // Outbound: window.ReactNativeWebView.postMessage(JSON string).
+  // Inbound: `message` events whose data is a JSON-RPC 2.0 string.
+  // The shell times tools/call out at 30s (-32000); the local guard below is
+  // a backstop so a dead bridge can never strand the UI in "loading".
+  const LOCAL_TIMEOUT_MS = 35000;
+  let nextId = 1;
+  const pending = new Map(); // id -> { resolve, reject, timer }
+
+  const bridged = () => {
+    try {
+      return (
+        typeof window.ReactNativeWebView === 'object' &&
+        window.ReactNativeWebView !== null &&
+        typeof window.ReactNativeWebView.postMessage === 'function'
+      );
+    } catch {
+      return false;
+    }
+  };
+
+  const post = (frame) => {
+    window.ReactNativeWebView.postMessage(JSON.stringify(frame));
+  };
+
+  const callTool = (name, args) =>
+    new Promise((resolve, reject) => {
+      if (!bridged()) {
+        reject(new Error('ui-bridge unavailable'));
+        return;
+      }
+      const id = nextId++;
+      pending.set(id, {
+        resolve,
+        reject,
+        timer: setTimeout(() => {
+          pending.delete(id);
+          reject(new Error('tools/call timed out'));
+        }, LOCAL_TIMEOUT_MS),
+      });
+      try {
+        post({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args } });
+      } catch (err) {
+        clearTimeout(pending.get(id)?.timer);
+        pending.delete(id);
+        reject(err);
+      }
+    });
+
+  const applyTheme = (params) => {
+    if (typeof params !== 'object' || params === null) return;
+    if (params.scheme === 'light' || params.scheme === 'dark') {
+      document.documentElement.setAttribute('data-theme', params.scheme);
+    }
+    const insets = params.insets;
+    if (typeof insets === 'object' && insets !== null) {
+      const s = document.documentElement.style;
+      s.setProperty('--safe-top', `${Number(insets.top || 0)}px`);
+      s.setProperty('--safe-right', `${Number(insets.right || 0)}px`);
+      s.setProperty('--safe-bottom', `${Number(insets.bottom || 0)}px`);
+      s.setProperty('--safe-left', `${Number(insets.left || 0)}px`);
+    }
+  };
+
+  const onFrame = (raw) => {
+    let frame;
+    try {
+      frame = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    } catch {
+      return; // malformed frames are dropped, never partially processed
+    }
+    if (typeof frame !== 'object' || frame === null || frame.jsonrpc !== '2.0') return;
+
+    if (frame.method === 'ui/theme') {
+      applyTheme(frame.params);
+      return;
+    }
+
+    const entry = pending.get(frame.id);
+    if (entry === undefined) return;
+    clearTimeout(entry.timer);
+    pending.delete(frame.id);
+    if (frame.error !== undefined && frame.error !== null) {
+      entry.reject(new Error(String(frame.error.message || 'tools/call failed')));
+    } else {
+      entry.resolve(frame.result);
+    }
+  };
+
+  window.addEventListener('message', (ev) => {
+    try {
+      onFrame(ev.data);
+    } catch {
+      /* never an uncaught error */
+    }
+  });
+
+  // ---- tool-result unwrapping ----
+  // A tools/call result is the MCP tool result: { content: [{type:'text',
+  // text: <JSON body>}], isError? } where the body is the same shape the
+  // control API answers with ({ ok, jobs | job | error }).
+  const toolBody = (result) => {
+    const text = result?.content?.[0]?.text;
+    let body;
+    try {
+      body = JSON.parse(String(text));
+    } catch {
+      body = null;
+    }
+    if (typeof body !== 'object' || body === null) {
+      throw new Error('unexpected tool result shape');
+    }
+    if (result.isError === true || body.ok !== true) {
+      throw new Error(String(body.error || 'tool call failed'));
+    }
+    return body;
+  };
+
+  // ---- dashboard ----
+  const $ = (id) => document.getElementById(id);
+  const jobsEl = $('jobs');
+  const noteEl = $('note');
+  const emptyEl = $('empty');
+  const filterEl = $('filter');
+  const refreshEl = $('refresh');
+  const formEl = $('submit-form');
+  const submitBtn = $('f-submit');
+
+  const note = (text, isError) => {
+    noteEl.textContent = text || '';
+    noteEl.className = isError ? 'err' : '';
+  };
+
+  const cell = (row, text, cls) => {
+    const td = document.createElement('td');
+    if (cls) td.className = cls;
+    td.textContent = text; // textContent only: job fields never parse as HTML
+    row.appendChild(td);
+  };
+
+  const renderJobs = (jobs) => {
+    jobsEl.textContent = '';
+    emptyEl.style.display = jobs.length === 0 ? 'block' : 'none';
+    for (const job of jobs) {
+      const tr = document.createElement('tr');
+      cell(tr, String(job.id || ''));
+      cell(tr, String(job.type || ''));
+      cell(tr, String(job.title || ''), 'title-cell');
+      cell(tr, String(job.status || ''), `status ${String(job.status || '')}`);
+      cell(tr, String(job.createdAt || ''));
+      const actions = document.createElement('td');
+      if (job.status === 'queued' || job.status === 'running') {
+        const kill = document.createElement('button');
+        kill.type = 'button';
+        kill.className = 'danger';
+        kill.textContent = 'Kill';
+        kill.addEventListener('click', () => {
+          kill.disabled = true;
+          kill.textContent = 'Killing…';
+          callTool('jobs_kill', { id: job.id })
+            .then((result) => {
+              toolBody(result);
+              return refresh();
+            })
+            .catch((err) => {
+              kill.disabled = false;
+              kill.textContent = 'Kill';
+              note(`kill failed: ${err.message}`, true);
+            });
+        });
+        actions.appendChild(kill);
+      }
+      tr.appendChild(actions);
+      jobsEl.appendChild(tr);
+    }
+  };
+
+  const refresh = () => {
+    if (!bridged()) return Promise.resolve();
+    const status = filterEl.value;
+    note('Loading…');
+    return callTool('jobs_list', status === '' ? {} : { status })
+      .then((result) => {
+        const body = toolBody(result);
+        renderJobs(Array.isArray(body.jobs) ? body.jobs : []);
+        note('');
+      })
+      .catch((err) => {
+        note(`jobs_list failed: ${err.message}`, true);
+      });
+  };
+
+  refreshEl.addEventListener('click', () => {
+    refresh();
+  });
+  filterEl.addEventListener('change', () => {
+    refresh();
+  });
+
+  formEl.addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    if (!bridged()) {
+      note('ui-bridge unavailable — cannot submit', true);
+      return;
+    }
+    submitBtn.disabled = true;
+    // The raw job-lifecycle submit shape (contracts/job-lifecycle.md):
+    // schema and env are fixed by the contract, the rest comes from the form.
+    callTool('jobs_submit', {
+      schema: 1,
+      type: $('f-type').value,
+      title: $('f-title').value,
+      instruction: $('f-instruction').value,
+      workdir: $('f-workdir').value,
+      env: 'minimal',
+    })
+      .then((result) => {
+        const body = toolBody(result);
+        note(`submitted ${String(body.job?.id)}`);
+        formEl.reset();
+        $('f-type').value = 'test';
+        return refresh();
+      })
+      .catch((err) => {
+        note(`submit failed: ${err.message}`, true);
+      })
+      .then(() => {
+        submitBtn.disabled = false;
+      });
+  });
+
+  // ---- boot: degradable by construction ----
+  // With a bridge: signal ui/ready (a request — the shell always responds,
+  // the response resolves and is discarded) and load the job list. Without
+  // one: show the "tools unavailable" banner over the static shell and
+  // disable the controls — a plain webview or Inspector preview is never a
+  // blank page.
+  try {
+    if (bridged()) {
+      const readyId = nextId++;
+      pending.set(readyId, {
+        resolve: () => {},
+        reject: () => {},
+        timer: setTimeout(() => pending.delete(readyId), LOCAL_TIMEOUT_MS),
+      });
+      post({ jsonrpc: '2.0', id: readyId, method: 'ui/ready' });
+      refresh();
+    } else {
+      $('banner').className = 'on';
+      refreshEl.disabled = true;
+      filterEl.disabled = true;
+      submitBtn.disabled = true;
+      note('standalone preview — no live data');
+    }
+  } catch {
+    // Even a failed boot leaves the static shell visible.
+    try {
+      $('banner').className = 'on';
+    } catch {
+      /* shell already rendered */
+    }
+  }
+})();
+</script>
+</body>
+</html>
