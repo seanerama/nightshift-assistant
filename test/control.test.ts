@@ -29,6 +29,7 @@ import { jobTypesPreamble } from '../src/jobs/types.js';
 import {
   CONTROL_PREAMBLE,
   createSessionManager,
+  GENERATIVE_UI_PREAMBLE,
   NIGHTSHIFT_TOOL_RULE,
   PROMOTE_PREAMBLE,
   REMARKABLE_PREAMBLE,
@@ -226,6 +227,94 @@ describe('control-enabled session spawn (Stage 5 gating)', () => {
     const prompt = call?.args[seedIdx + 1] ?? '';
     expect(prompt).toContain(CONTROL_PREAMBLE);
     expect(prompt).not.toContain('nightshift remarkable');
+  });
+
+  it('adds the generative-ui preamble only when NIGHTSHIFT_GENERATIVE_UI_ENABLED is on (Stage 35)', async () => {
+    const mgr = makeManager({ generativeUiEnabled: true });
+    await mgr.relay(inbound('hello'));
+
+    const [call] = invocations();
+    const seedIdx = call?.args.indexOf('--append-system-prompt') ?? -1;
+    const prompt = call?.args[seedIdx + 1] ?? '';
+    expect(prompt).toContain(CONTROL_PREAMBLE);
+    expect(prompt).toContain(GENERATIVE_UI_PREAMBLE);
+    // The authoring flow's hard rules are spelled out (ADR 0013).
+    expect(prompt).toContain('nightshift ui list');
+    expect(prompt).toContain('REUSE FIRST');
+    expect(prompt).toContain('NEVER regenerate');
+    expect(prompt).toContain('ui/ready');
+    expect(prompt.indexOf(CONTROL_PREAMBLE)).toBeLessThan(prompt.indexOf(GENERATIVE_UI_PREAMBLE));
+  });
+
+  it('omits the generative-ui preamble while the kill-switch is OFF (dark by default)', async () => {
+    const mgr = makeManager(); // generativeUiEnabled stays false
+    await mgr.relay(inbound('hello'));
+
+    const [call] = invocations();
+    const seedIdx = call?.args.indexOf('--append-system-prompt') ?? -1;
+    const prompt = call?.args[seedIdx + 1] ?? '';
+    expect(prompt).toContain(CONTROL_PREAMBLE);
+    expect(prompt).not.toContain('nightshift ui');
+  });
+
+  it('control OFF suppresses the generative-ui preamble even with its flag on (both flags required)', async () => {
+    const mgr = makeManager({ controlEnabled: false, apiToken: '', generativeUiEnabled: true });
+    await mgr.relay(inbound('hello'));
+
+    // No control surface → no capability preambles at all (rotation is off,
+    // so there is no --append-system-prompt whatsoever — Stage 1 spawn shape).
+    const [call] = invocations();
+    expect(call?.args).not.toContain('--append-system-prompt');
+  });
+
+  it('control OFF + generative-ui OFF: still no preamble (fourth combination)', async () => {
+    const mgr = makeManager({ controlEnabled: false, apiToken: '' });
+    await mgr.relay(inbound('hello'));
+
+    const [call] = invocations();
+    expect(call?.args).not.toContain('--append-system-prompt');
+  });
+
+  it('generative-ui preamble references only ui subcommands that exist in bin/nightshift (drift detector)', () => {
+    const cli = readFileSync(REAL_CLI, 'utf8');
+    const mentioned = [...GENERATIVE_UI_PREAMBLE.matchAll(/nightshift ui ([a-z]+)\b/g)].map(
+      (m) => m[1] as string,
+    );
+    // The preamble teaches the FULL frozen verb family (contracts/generative-ui.md)…
+    expect(new Set(mentioned)).toEqual(
+      new Set(['validate', 'install', 'list', 'show', 'activate', 'grant', 'revoke']),
+    );
+    // …and every mention must exist verbatim in the CLI's USAGE text — any
+    // preamble verb the CLI does not spell is drift, caught here.
+    for (const sub of mentioned) {
+      expect(cli, `bin/nightshift has no usage line for "nightshift ui ${sub}"`).toContain(
+        `nightshift ui ${sub}`,
+      );
+    }
+    // Flag spellings the preamble instructs must exist in the CLI too.
+    for (const flag of ['--name', '--tools', '--provenance', '--approval']) {
+      expect(GENERATIVE_UI_PREAMBLE).toContain(flag);
+      expect(cli).toContain(flag);
+    }
+  });
+
+  it('generative-ui preamble pins the authoring discipline (Stage 35)', () => {
+    // Generate once; never per interaction; iteration = next version, same name.
+    expect(GENERATIVE_UI_PREAMBLE).toContain('Generate ONCE');
+    expect(GENERATIVE_UI_PREAMBLE).toContain('NEVER regenerate a page per interaction');
+    expect(GENERATIVE_UI_PREAMBLE).toContain('SAME name');
+    // ui-bridge authoring rules.
+    expect(GENERATIVE_UI_PREAMBLE).toContain('256');
+    expect(GENERATIVE_UI_PREAMBLE).toContain('No network, no storage, no navigation');
+    expect(GENERATIVE_UI_PREAMBLE).toContain('window.ReactNativeWebView.postMessage');
+    expect(GENERATIVE_UI_PREAMBLE).toContain('ui/ready');
+    expect(GENERATIVE_UI_PREAMBLE).toContain('degradably');
+    // Zero-trust grants: explicit in-chat approval, verbatim quote, refusal path.
+    expect(GENERATIVE_UI_PREAMBLE).toContain('NEVER work until granted');
+    expect(GENERATIVE_UI_PREAMBLE).toContain('ONLY on approval');
+    expect(GENERATIVE_UI_PREAMBLE).toContain('verbatim');
+    // The owner-facing landmark.
+    expect(GENERATIVE_UI_PREAMBLE).toContain('Apps tab');
   });
 
   it('omits the type list while the registry kill-switch is OFF', async () => {

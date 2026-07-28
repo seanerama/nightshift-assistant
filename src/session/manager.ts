@@ -113,6 +113,24 @@ export const PROMOTE_PREAMBLE = [
 export const REMARKABLE_PREAMBLE =
   "- `nightshift remarkable <path>` — push a document to the owner's reMarkable tablet (lands in /Inbox via the reMarkable cloud; it syncs to the tablet on its next sync). Allowed roots: ~/projects and the app's jobs/ + logs/ dirs. Use it when the owner asks to send a doc/PDF to their reMarkable.";
 
+/**
+ * Generative-UI preamble (Stage 35): appended (after the control preamble)
+ * only when BOTH the control surface and NIGHTSHIFT_GENERATIVE_UI_ENABLED are
+ * on — a dark feature is not advertised. Teaches the ADR 0013 authoring flow
+ * over the contracts/generative-ui.md CLI verb family: generate ONCE at
+ * authoring time, validate deterministically, install versioned, grant tools
+ * only on explicit in-chat owner approval (zero-trust). The verb spellings
+ * are drift-checked against bin/nightshift's USAGE in test/control.test.ts.
+ */
+export const GENERATIVE_UI_PREAMBLE = [
+  "- `nightshift ui …` — build phone screens for the owner: author a single-file HTML page and register it as a versioned `ui://nightshift/<name>@v<N>` resource that appears in the phone app's Apps tab. Generate ONCE, at authoring time: an installed page is a persisted artifact fed only by its declared MCP tools — NEVER regenerate a page per interaction; a change is the NEXT version of the SAME name.",
+  '  REUSE FIRST (mandatory): before generating anything, run `nightshift ui list` and prefer iterating an existing resource — `nightshift ui install` under the SAME name registers the next version.',
+  '  AUTHORING RULES (nightshift-client/contracts/ui-bridge.md, mandatory): ONE self-contained HTML file, ≤ 256 KB. No network, no storage, no navigation — the ONLY channel out is the postMessage JSON-RPC bridge (`window.ReactNativeWebView.postMessage`). Signal `ui/ready` once rendered. Render degradably: useful static markup even when every tool call fails.',
+  '  THE LOOP: write the HTML to a temp file → `nightshift ui validate <file>` → on violations revise and re-validate (the verdict names each failed rule + detail; failed attempts consume no version numbers) → `nightshift ui install <file> --name <name> [--tools a,b] --provenance "<the owner\'s request, quoted>"` → tell the owner it is in the Apps tab.',
+  '  GRANTS (mandatory): tools NEVER work until granted — a fresh install serves an EMPTY allowlist even when the page requests tools. When a page needs a tool, ask the owner explicitly in chat ("this page requests jobs_kill — allow?") and ONLY on approval run `nightshift ui grant <name> <tool> --approval "<the owner\'s approval message, verbatim>"`. On refusal leave it ungranted and say plainly what will not work. `nightshift ui revoke <name> <tool>` on request.',
+  '  ROLLBACK: `nightshift ui show <name>` lists every version; when the owner dislikes one, `nightshift ui activate <name> <version>` makes a prior version active again — versions are never deleted.',
+].join('\n');
+
 interface AgentResult {
   ok: boolean;
   text: string;
@@ -447,6 +465,9 @@ export function createSessionManager(
       if (config.controlEnabled) parts.push(CONTROL_PREAMBLE);
       if (config.controlEnabled && config.promoteEnabled) parts.push(PROMOTE_PREAMBLE);
       if (config.controlEnabled && config.remarkableEnabled) parts.push(REMARKABLE_PREAMBLE);
+      if (config.controlEnabled && config.generativeUiEnabled) {
+        parts.push(GENERATIVE_UI_PREAMBLE);
+      }
       if (config.controlEnabled && config.typesEnabled) parts.push(jobTypesPreamble());
       if (config.rotationEnabled) {
         const seed = buildSeed(appDir, config.seedMaxBytes);
