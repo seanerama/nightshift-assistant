@@ -258,6 +258,28 @@ describe('security: no arbitrary-path read, no traversal, no unconfined serving'
     expect(sanitizeFilename('')).toBe('file');
   });
 
+  it('survives a malformed percent-encoded file id — JSON error, process alive (PR #67 fix)', async () => {
+    const h = await start(neverRelay);
+    try {
+      // Auth-first unchanged: without a token even the malformed path gets 401.
+      const unauthed = await fetch(`http://127.0.0.1:${h.port}/app/v1/files/%zz`);
+      expect(unauthed.status).toBe(401);
+      // Authenticated: the malformed id decodes to its literal text, misses
+      // the mapping, and 404s with the error shape — it must never throw
+      // URIError out of the dispatch and take the daemon (and the Webex
+      // door with it) down.
+      const res = await get(h.port, '/app/v1/files/%zz');
+      expect(res.status).toBe(404);
+      const body = (await res.json()) as { ok: boolean; error: string };
+      expect(body.ok).toBe(false);
+      // The process survived: the SAME transport keeps serving.
+      const health = await get(h.port, '/app/v1/health');
+      expect(health.status).toBe(200);
+    } finally {
+      await h.close();
+    }
+  });
+
   it('404s an unmapped file id with the error shape', async () => {
     const h = await start(neverRelay);
     try {

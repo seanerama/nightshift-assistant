@@ -420,7 +420,36 @@ export function createAppTransport(deps: AppTransportDeps): AppTransport {
     respond(res, 200, { schema: 1, events: outbox.after(after) });
   }
 
+  /**
+   * decodeURIComponent that treats malformed percent-encoding as the literal
+   * string instead of throwing URIError. No issued id contains a raw '%', so
+   * a malformed id simply misses the mapping and 404s like any unknown id.
+   */
+  function safeDecode(raw: string): string {
+    try {
+      return decodeURIComponent(raw);
+    } catch {
+      return raw;
+    }
+  }
+
   function handle(req: IncomingMessage, res: ServerResponse): void {
+    // CONTAINMENT (review fix, PR #67): the entire synchronous dispatch is
+    // guarded — an app-surface failure must answer with the error shape, and
+    // must NEVER escape to crash the daemon (the Webex door rides in the same
+    // process). Async handlers carry their own .catch with the same posture.
+    try {
+      routeRequest(req, res);
+    } catch (err) {
+      log.error('app request handler failed', {
+        path: req.url?.split('?')[0],
+        error: err instanceof Error ? err.message : String(err),
+      });
+      if (!res.headersSent) sendError(res, 500, 'internal error');
+    }
+  }
+
+  function routeRequest(req: IncomingMessage, res: ServerResponse): void {
     // Gate 1 — bearer auth BEFORE routing: 401 precedes 404 on every path,
     // real or not, so the surface is not enumerable without a token.
     const authHeader = req.headers.authorization;
@@ -483,7 +512,7 @@ export function createAppTransport(deps: AppTransportDeps): AppTransport {
       return;
     }
     if (method === 'GET' && path.startsWith('/app/v1/files/')) {
-      handleFileDownload(decodeURIComponent(path.slice('/app/v1/files/'.length)), res);
+      handleFileDownload(safeDecode(path.slice('/app/v1/files/'.length)), res);
       return;
     }
     // Includes /mcp: neither MCP capability is declared (Stages 27–28), so it

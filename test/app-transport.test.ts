@@ -467,6 +467,53 @@ describe('GET /app/v1/events (SSE)', () => {
   });
 });
 
+describe('containment: a synchronous route failure never escapes the dispatch (PR #67)', () => {
+  it('answers 500 with the error shape and keeps serving — the daemon never dies', async () => {
+    const db = openDatabase(':memory:');
+    migrate(db, MIGRATIONS_DIR);
+    const log = makeTestLogger();
+    // An outbox whose reads throw synchronously — standing in for any future
+    // synchronous defect inside a route handler.
+    const broken: AppOutbox = {
+      append: () => {
+        throw new Error('sync boom');
+      },
+      after: () => {
+        throw new Error('sync boom');
+      },
+      onAppend: () => () => undefined,
+      hasAck: () => false,
+    };
+    const files = createAppFiles(db, log, {
+      uploadsDir: join(tmpdir(), 'nightshift-unused-uploads'),
+      roots: [],
+    });
+    const transport = createAppTransport({
+      config: makeConfig({ appTransportEnabled: true, appToken: TOKEN, appPort: 0 }),
+      log,
+      outbox: broken,
+      files,
+      relay: echoRelay,
+      version: '0.0.0-test',
+    });
+    const port = await transport.listen();
+    try {
+      const res = await request(port, '/app/v1/outbox', { token: TOKEN });
+      expect(res.status).toBe(500);
+      expect(await res.json()).toEqual({ ok: false, error: 'internal error' });
+      expect(log.entries.some((e) => e.level === 'error' && e.msg.includes('handler failed'))).toBe(
+        true,
+      );
+      // Contained: the same transport still serves the next request.
+      const health = await request(port, '/app/v1/health', { token: TOKEN });
+      expect(health.status).toBe(200);
+    } finally {
+      await transport.close();
+      db.close();
+    }
+  });
+});
+
 describe('outbox durability (ADR 0010: row committed before any live emit)', () => {
   it('a failing live listener loses nothing — the row is durable and resumable', () => {
     const db = openDatabase(':memory:');
