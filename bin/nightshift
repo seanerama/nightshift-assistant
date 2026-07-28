@@ -70,6 +70,16 @@ Usage:
                                    Make an already-registered version the
                                    active one (rollback = re-activation;
                                    nothing is deleted)
+  nightshift ui grant <name> <tool> --approval <text>
+                                   Grant an MCP tool to a registered UI
+                                   resource — a durable owner-approval record
+                                   (--approval is the owner's in-chat approval
+                                   message). The served allowlist is
+                                   granted ∩ requested per version
+  nightshift ui revoke <name> <tool>
+                                   Revoke a granted tool — immediate across
+                                   all versions of the name; the grant row is
+                                   kept (revoked, never deleted)
   nightshift rotate                Rotate the conversational session (manual)
   nightshift status                Daemon status (version, uptime, session, job counts)
 
@@ -235,6 +245,17 @@ function formatUiResource(r) {
   ].join('\n');
 }
 
+/** Readable one-grant block (UiGrantRecord, contracts/generative-ui.md). */
+function formatUiGrant(g) {
+  return [
+    `name:      ${g.name}`,
+    `tool:      ${g.tool}`,
+    `granted:   ${g.grantedAt}`,
+    `revoked:   ${g.revokedAt ?? '—'}`,
+    `approval:  ${g.approvalText}`,
+  ].join('\n');
+}
+
 /** Readable ui resources table. */
 function formatUiList(resources) {
   if (resources.length === 0) return '(no ui resources)';
@@ -277,6 +298,7 @@ function parseArgs(argv) {
     '--name',
     '--tools',
     '--provenance',
+    '--approval',
   ]);
   const options = {};
   const positionals = [];
@@ -421,7 +443,7 @@ async function runCommand(conn, parsed) {
       };
     }
     case 'ui': {
-      // 1:1 face of the Stage 31 /api/v1/ui/* doors (contracts/generative-ui.md).
+      // 1:1 face of the /api/v1/ui/* doors (Stages 31–33, contracts/generative-ui.md).
       // Files are read HERE (the CLI's cwd) and shipped as HTML in the body —
       // the daemon never reads author files from disk.
       const sub = positionals[0];
@@ -505,6 +527,31 @@ async function runCommand(conn, parsed) {
           { version: Number.parseInt(version, 10) },
         );
         return { result, render: (r) => `Activated.\n${formatUiResource(r.resource)}` };
+      }
+      if (sub === 'grant') {
+        // Stage 33: durable owner approval — --approval carries the owner's
+        // in-chat approval message into the ui_grants history.
+        const [, name, tool] = positionals;
+        if (name === undefined || tool === undefined) {
+          fail(`ui grant requires <name> and <tool>\n\n${USAGE}`);
+        }
+        if (options.approval === undefined || options.approval === '') {
+          fail(`ui grant requires --approval <text> (the owner's approval message)\n\n${USAGE}`);
+        }
+        const result = await callApi(conn, 'POST', '/api/v1/ui/grants', {
+          name,
+          tool,
+          approvalText: options.approval,
+        });
+        return { result, render: (r) => `Granted.\n${formatUiGrant(r.grant)}` };
+      }
+      if (sub === 'revoke') {
+        const [, name, tool] = positionals;
+        if (name === undefined || tool === undefined) {
+          fail(`ui revoke requires <name> and <tool>\n\n${USAGE}`);
+        }
+        const result = await callApi(conn, 'POST', '/api/v1/ui/grants/revoke', { name, tool });
+        return { result, render: (r) => `Revoked.\n${formatUiGrant(r.grant)}` };
       }
       fail(`unknown ui subcommand: ${sub ?? '(none)'}\n\n${USAGE}`);
       break;

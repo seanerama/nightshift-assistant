@@ -283,13 +283,14 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
       return;
     }
 
-    // /api/v1/ui/* — generative UI (Stages 31–32, contracts/generative-ui.md,
+    // /api/v1/ui/* — generative UI (Stages 31–33, contracts/generative-ui.md,
     // additive on the frozen control-api v1 surface). Flag off → 404 for the
     // WHOLE family: the feature is ABSENT (not 403-disabled) — the contract's
-    // dark posture. Thin doors: naming, validation, versioning, and the
-    // active-pointer invariant all live in src/ui/registry.ts;
-    // UiRegistryError maps to 422 (with the verdict when the rejection is a
-    // failed validation) in the catch below.
+    // dark posture. Thin doors: naming, validation, versioning, the
+    // active-pointer invariant, and the grant machinery all live in
+    // src/ui/registry.ts; UiRegistryError maps to its status (422, or 404 for
+    // unknown-resource/no-active-grant — with the verdict when the rejection
+    // is a failed validation) in the catch below.
     if (path.startsWith('/api/v1/ui/')) {
       if (!config.generativeUiEnabled) {
         respond(res, 404, { ok: false, error: 'not found' });
@@ -453,6 +454,69 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
         return;
       }
 
+      // POST /api/v1/ui/grants — body { name, tool, approvalText } (Stage 33):
+      // record the owner's approval durably. Idempotent per (name, tool)
+      // while an unrevoked grant exists. Unknown resource → 404, tool outside
+      // the frozen MCP catalog → 422 — both raised by the registry as
+      // UiRegistryError (thin door, logic in src/ui/registry.ts).
+      if (method === 'POST' && path === '/api/v1/ui/grants') {
+        let body: unknown;
+        try {
+          body = await readJsonBody(req);
+        } catch {
+          respond(res, 400, { ok: false, error: 'invalid JSON body' });
+          return;
+        }
+        const { name, tool, approvalText } = body as {
+          name?: unknown;
+          tool?: unknown;
+          approvalText?: unknown;
+        };
+        if (typeof name !== 'string' || name === '') {
+          respond(res, 400, { ok: false, error: 'grant requires "name" (non-empty string)' });
+          return;
+        }
+        if (typeof tool !== 'string' || tool === '') {
+          respond(res, 400, { ok: false, error: 'grant requires "tool" (non-empty string)' });
+          return;
+        }
+        if (typeof approvalText !== 'string' || approvalText === '') {
+          respond(res, 400, {
+            ok: false,
+            error:
+              'grant requires "approvalText" (non-empty string — the owner\'s approval message)',
+          });
+          return;
+        }
+        respond(res, 200, { ok: true, grant: ui.grant(name, tool, approvalText) });
+        return;
+      }
+
+      // POST /api/v1/ui/grants/revoke — body { name, tool } (Stage 33): sets
+      // revokedAt on the active grant row (rows are NEVER deleted — the
+      // approval history stays durable). Immediate across all versions of the
+      // name. No active grant / unknown resource → 404; unknown tool → 422.
+      if (method === 'POST' && path === '/api/v1/ui/grants/revoke') {
+        let body: unknown;
+        try {
+          body = await readJsonBody(req);
+        } catch {
+          respond(res, 400, { ok: false, error: 'invalid JSON body' });
+          return;
+        }
+        const { name, tool } = body as { name?: unknown; tool?: unknown };
+        if (typeof name !== 'string' || name === '') {
+          respond(res, 400, { ok: false, error: 'revoke requires "name" (non-empty string)' });
+          return;
+        }
+        if (typeof tool !== 'string' || tool === '') {
+          respond(res, 400, { ok: false, error: 'revoke requires "tool" (non-empty string)' });
+          return;
+        }
+        respond(res, 200, { ok: true, grant: ui.revoke(name, tool) });
+        return;
+      }
+
       respond(res, 404, { ok: false, error: 'not found' });
       return;
     }
@@ -519,8 +583,9 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
         return;
       }
       if (err instanceof UiRegistryError) {
-        // Rejected ui install: bad name, unknown requested tool, or invalid
-        // HTML — 422 with the machine-readable verdict when validation failed.
+        // Rejected ui input: bad name, unknown tool, or invalid HTML → 422
+        // (with the machine-readable verdict when validation failed); unknown
+        // resource name / no active grant → 404 (Stage 33).
         respond(res, err.status, {
           ok: false,
           error: err.message,

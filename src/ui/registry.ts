@@ -1,11 +1,15 @@
 /**
- * UI registry (contracts/generative-ui.md, ADR 0015, Stages 31–32): the SQLite
- * home of generated single-file resource pages — tables ui_resources +
+ * UI registry (contracts/generative-ui.md, ADR 0015, Stages 31–33): the
+ * SQLite home of generated single-file resource pages — tables ui_resources +
  * ui_grants (migration 0009). Owns validation-before-write (there is NO
- * unvalidated insert path), the name rule, version assignment, and the
- * active-pointer invariant (exactly one active version per name). The
- * /api/v1/ui/* doors and the MCP resource mapping are thin faces over this
- * module (control-api discipline — logic here, not in transport).
+ * unvalidated insert path), the name rule, version assignment, the
+ * active-pointer invariant (exactly one active version per name), and the
+ * zero-trust grant machinery (Stage 33): grants attach to the NAME, the
+ * effective allowlist per record is granted(name) ∩ requestedTools(version),
+ * and grant rows are NEVER deleted — revocation sets revoked_at, keeping the
+ * owner-approval history durable. The /api/v1/ui/* doors and the MCP resource
+ * mapping are thin faces over this module (control-api discipline — logic
+ * here, not in transport).
  */
 
 import type Database from 'better-sqlite3';
@@ -46,16 +50,28 @@ export interface UiResourceRecord {
   html?: string;
 }
 
+/** contracts/generative-ui.md §Schema — the frozen grant record shape. */
+export interface UiGrantRecord {
+  name: string;
+  tool: string;
+  approvalText: string;
+  grantedAt: string;
+  revokedAt: string | null;
+}
+
 /**
- * A rejected registry input — maps to HTTP 422 on the doors. Carries the
- * validator verdict when (and only when) the rejection IS a failed validation.
+ * A rejected registry input — maps to an HTTP error on the doors: 422 (the
+ * default — rejected input) or 404 (unknown resource name / no active grant,
+ * Stage 33). Carries the validator verdict when (and only when) the rejection
+ * IS a failed validation.
  */
 export class UiRegistryError extends Error {
-  readonly status = 422;
+  readonly status: number;
   readonly verdict: UiVerdict | undefined;
-  constructor(message: string, verdict?: UiVerdict) {
+  constructor(message: string, verdict?: UiVerdict, status = 422) {
     super(message);
     this.verdict = verdict;
+    this.status = status;
   }
 }
 
@@ -93,6 +109,26 @@ export interface UiRegistry {
   activate(name: string, version: number): UiResourceRecord | null;
   /** Resolve an exact ui://nightshift/<name>@v<N> uri (active or not), WITH html. */
   getByUri(uri: string): UiResourceRecord | null;
+  /**
+   * Record the owner's approval durably (Stage 33, ADR 0015). Grants attach
+   * to the NAME. Idempotent per (name, tool) while an unrevoked grant exists
+   * — the existing grant is returned, never duplicated; a re-grant after a
+   * revoke is a NEW row (the history stays durable). Throws UiRegistryError:
+   * 404 for an unknown resource name, 422 for a tool outside the frozen MCP
+   * catalog. Granting a tool the version does not request is legal — it is
+   * recorded, and simply absent from the intersection until requested.
+   */
+  grant(name: string, tool: string, approvalText: string): UiGrantRecord;
+  /**
+   * Revoke a granted tool: sets revoked_at on the active grant row — rows
+   * are NEVER deleted. Immediate across all versions of the name (the
+   * intersection is computed per read). Throws UiRegistryError: 404 for an
+   * unknown resource name or a tool with no active grant, 422 for a tool
+   * outside the frozen MCP catalog.
+   */
+  revoke(name: string, tool: string): UiGrantRecord;
+  /** Tools with an unrevoked grant row for the name (name-level, NOT intersected). */
+  grantedTools(name: string): string[];
 }
 
 /** The frozen uri shape: ui://nightshift/<name>@v<N>. */
@@ -113,34 +149,130 @@ interface UiResourceRow {
   html?: string;
 }
 
-/**
- * grantedTools is the computed intersection granted(name) ∩ requestedTools
- * (ADR 0015). No grant door exists until Stage 33, so no ui_grants row can
- * exist and the intersection is [] by construction — zero-trust, hard-coded
- * rather than half-implementing the grant machinery early.
- */
-const GRANTED_TOOLS_STAGE_31: string[] = [];
-
-function toRecord(row: UiResourceRow): UiResourceRecord {
-  const record: UiResourceRecord = {
-    name: row.name,
-    version: row.version,
-    active: row.active === 1,
-    requestedTools: JSON.parse(row.requested_tools) as string[],
-    grantedTools: [...GRANTED_TOOLS_STAGE_31],
-    provenance: row.provenance,
-    createdAt: row.created_at,
-    htmlBytes: row.html_bytes,
-  };
-  if (row.html !== undefined) record.html = row.html;
-  return record;
+interface UiGrantRow {
+  id: number;
+  name: string;
+  tool: string;
+  approval_text: string;
+  granted_at: string;
+  revoked_at: string | null;
 }
+
+function toGrantRecord(row: UiGrantRow): UiGrantRecord {
+  return {
+    name: row.name,
+    tool: row.tool,
+    approvalText: row.approval_text,
+    grantedAt: row.granted_at,
+    revokedAt: row.revoked_at,
+  };
+}
+
+const GRANT_COLUMNS = 'id, name, tool, approval_text, granted_at, revoked_at';
 
 const ROW_COLUMNS =
   'name, version, active, requested_tools, provenance, created_at, ' +
   'LENGTH(CAST(html AS BLOB)) AS html_bytes';
 
 export function createUiRegistry(db: Database.Database): UiRegistry {
+  /** Tools with an unrevoked grant row for the name (ADR 0015: per-NAME). */
+  const activeGrantSet = (name: string): Set<string> => {
+    const rows = db
+      .prepare('SELECT DISTINCT tool FROM ui_grants WHERE name = ? AND revoked_at IS NULL')
+      .all(name) as Array<{ tool: string }>;
+    return new Set(rows.map((row) => row.tool));
+  };
+
+  /**
+   * The frozen record shape. grantedTools is the computed intersection
+   * granted(name) ∩ requestedTools of THIS record (ADR 0015) — per-record,
+   * so it stays version-correct when multiple versions exist: each version
+   * carries only the granted tools it actually requests. Evaluated on every
+   * read — a revoke is immediate on the next list/read.
+   */
+  const toRecord = (row: UiResourceRow): UiResourceRecord => {
+    const requestedTools = JSON.parse(row.requested_tools) as string[];
+    const granted = activeGrantSet(row.name);
+    const record: UiResourceRecord = {
+      name: row.name,
+      version: row.version,
+      active: row.active === 1,
+      requestedTools,
+      grantedTools: requestedTools.filter((tool) => granted.has(tool)),
+      provenance: row.provenance,
+      createdAt: row.created_at,
+      htmlBytes: row.html_bytes,
+    };
+    if (row.html !== undefined) record.html = row.html;
+    return record;
+  };
+
+  /** 404-class refusal for a name with no registered resource (any version). */
+  const requireKnownName = (name: string, verb: string): void => {
+    const row = db.prepare('SELECT 1 FROM ui_resources WHERE name = ? LIMIT 1').get(name);
+    if (row === undefined) {
+      throw new UiRegistryError(
+        `cannot ${verb}: no registered resource named "${name}"`,
+        undefined,
+        404,
+      );
+    }
+  };
+
+  /** 422-class refusal for a tool outside the frozen MCP catalog. */
+  const requireKnownTool = (tool: string): void => {
+    if (!MCP_TOOL_NAMES.includes(tool)) {
+      throw new UiRegistryError(
+        `unknown tool: ${JSON.stringify(tool)} (the MCP catalog is: ${MCP_TOOL_NAMES.join(', ')})`,
+      );
+    }
+  };
+
+  /** The active (unrevoked) grant row for (name, tool), newest first. */
+  const activeGrantRow = (name: string, tool: string): UiGrantRow | undefined =>
+    db
+      .prepare(
+        `SELECT ${GRANT_COLUMNS} FROM ui_grants
+         WHERE name = ? AND tool = ? AND revoked_at IS NULL ORDER BY id DESC LIMIT 1`,
+      )
+      .get(name, tool) as UiGrantRow | undefined;
+
+  // Idempotency needs check-then-insert to be atomic (no duplicate active rows).
+  const grantTx = db.transaction((name: string, tool: string, approvalText: string): UiGrantRow => {
+    const existing = activeGrantRow(name, tool);
+    if (existing !== undefined) return existing; // idempotent while unrevoked
+    const grantedAt = new Date().toISOString();
+    const inserted = db
+      .prepare(
+        `INSERT INTO ui_grants (name, tool, approval_text, granted_at, revoked_at)
+         VALUES (?, ?, ?, ?, NULL)`,
+      )
+      .run(name, tool, approvalText, grantedAt);
+    return {
+      id: Number(inserted.lastInsertRowid),
+      name,
+      tool,
+      approval_text: approvalText,
+      granted_at: grantedAt,
+      revoked_at: null,
+    };
+  });
+
+  // Revocation is an UPDATE, never a DELETE — the approval history is durable.
+  const revokeTx = db.transaction((name: string, tool: string): UiGrantRow => {
+    const existing = activeGrantRow(name, tool);
+    if (existing === undefined) {
+      throw new UiRegistryError(
+        `cannot revoke: "${tool}" has no active grant for "${name}"`,
+        undefined,
+        404,
+      );
+    }
+    const revokedAt = new Date().toISOString();
+    db.prepare('UPDATE ui_grants SET revoked_at = ? WHERE id = ?').run(revokedAt, existing.id);
+    return { ...existing, revoked_at: revokedAt };
+  });
+
   const install = db.transaction(
     (name: string, html: string, requestedTools: string[], provenance: string): UiResourceRow => {
       // Stage 32 (ADR 0015): installing under an existing name assigns the
@@ -257,6 +389,22 @@ export function createUiRegistry(db: Database.Database): UiRegistry {
         .prepare(`SELECT ${ROW_COLUMNS}, html FROM ui_resources WHERE name = ? AND version = ?`)
         .get(match[1], Number.parseInt(match[2] as string, 10)) as UiResourceRow | undefined;
       return row === undefined ? null : toRecord(row);
+    },
+
+    grant(name: string, tool: string, approvalText: string): UiGrantRecord {
+      requireKnownName(name, 'grant'); // 404 before the tool check — the resource is the address
+      requireKnownTool(tool); // 422
+      return toGrantRecord(grantTx(name, tool, approvalText));
+    },
+
+    revoke(name: string, tool: string): UiGrantRecord {
+      requireKnownName(name, 'revoke'); // 404
+      requireKnownTool(tool); // 422
+      return toGrantRecord(revokeTx(name, tool)); // 404 when never/no-longer granted
+    },
+
+    grantedTools(name: string): string[] {
+      return [...activeGrantSet(name)];
     },
   };
 }
