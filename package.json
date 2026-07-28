@@ -20,6 +20,7 @@
   },
   "homepage": "https://github.com/seanerama/nightshift-assistant#readme",
   "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0",
     "better-sqlite3": "12.11.1"
   },
   "devDependencies": {

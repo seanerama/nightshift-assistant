@@ -1,7 +1,8 @@
 /**
  * Stage 24 app transport (contracts/app-ingress.md v1, pinned to
  * agent-app-contract#v1.0.0; ADR 0009–0011): bearer auth with 401-before-404,
- * health + manifest (capabilities exactly ["chat","files"] since Stage 26),
+ * health + manifest (capabilities exactly ["chat","files","mcp-tools"] since
+ * Stage 27),
  * the chat triad (202 before relay, durable dedup across restart, SSE
  * Last-Event-ID resume == ?after=), the migration ladder, and the dark-flag /
  * fail-closed startup wiring. The CI conformance job is the contract test;
@@ -22,7 +23,14 @@ import { type AppFiles, createAppFiles } from '../src/transport/app/files.js';
 import { type AppEvent, type AppOutbox, createAppOutbox } from '../src/transport/app/outbox.js';
 import { type AppTransport, createAppTransport } from '../src/transport/app/server.js';
 import type { AssistantReply, InboundMessage } from '../src/types.js';
-import { MIGRATIONS_DIR, makeConfig, makeTestLogger, type TestLogger, waitFor } from './helpers.js';
+import {
+  MIGRATIONS_DIR,
+  makeAppMcp,
+  makeConfig,
+  makeTestLogger,
+  type TestLogger,
+  waitFor,
+} from './helpers.js';
 
 const TOKEN = 'test-app-token';
 
@@ -82,6 +90,7 @@ async function startTransport(
     log,
     outbox,
     files,
+    mcp: makeAppMcp(database, log, config),
     relay: (msg) => {
       relayCalls.push(msg);
       return relay(msg);
@@ -214,10 +223,14 @@ describe('app transport auth (ADR 0011: 401 precedes 404)', () => {
     expect(await res.json()).toEqual({ ok: false, error: 'not found' });
   });
 
-  it('404s the still-undeclared MCP route with a valid token; files routes now answer', async () => {
-    // mcp-tools / mcp-apps-ui stay undeclared (Stages 27–28) → 404.
+  it('declared routes answer with a valid token; MCP is POST-only (405 otherwise)', async () => {
+    // mcp-tools is DECLARED since Stage 27: POST /mcp answers (the SDK's 415
+    // here — no JSON content-type on an empty body — not a gating 404).
     const mcp = await request(h.port, '/app/v1/mcp', { token: TOKEN, method: 'POST' });
-    expect(mcp.status).toBe(404);
+    expect(mcp.status).toBe(415);
+    // The endpoint the contract exposes is POST only; GET/DELETE → 405.
+    const get = await request(h.port, '/app/v1/mcp', { token: TOKEN });
+    expect(get.status).toBe(405);
     // The files routes are DECLARED since Stage 26: they answer (with their
     // own errors here — no multipart body / unknown id), never a gating 404
     // that would make the manifest a lie in the other direction.
@@ -246,14 +259,14 @@ describe('health + manifest', () => {
     expect(body.uptimeSec).toBeGreaterThanOrEqual(0);
   });
 
-  it('declares capabilities EXACTLY ["chat","files"] — served for real, nothing unserved', async () => {
+  it('declares capabilities EXACTLY ["chat","files","mcp-tools"] — served for real, nothing unserved', async () => {
     const res = await request(h.port, '/app/v1/manifest', { token: TOKEN });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
       schema: 1,
       agent: { name: 'nightshift-assistant', version: '0.0.0-test' },
       contract: { name: 'app-ingress', version: 1 },
-      capabilities: ['chat', 'files'],
+      capabilities: ['chat', 'files', 'mcp-tools'],
     });
   });
 });
@@ -488,11 +501,13 @@ describe('containment: a synchronous route failure never escapes the dispatch (P
       uploadsDir: join(tmpdir(), 'nightshift-unused-uploads'),
       roots: [],
     });
+    const config = makeConfig({ appTransportEnabled: true, appToken: TOKEN, appPort: 0 });
     const transport = createAppTransport({
-      config: makeConfig({ appTransportEnabled: true, appToken: TOKEN, appPort: 0 }),
+      config,
       log,
       outbox: broken,
       files,
+      mcp: makeAppMcp(db, log, config),
       relay: echoRelay,
       version: '0.0.0-test',
     });
@@ -678,7 +693,7 @@ describe('createApp wiring (dark flag + fail-closed startup)', () => {
       });
       expect(res.status).toBe(200);
       const manifest = (await res.json()) as { capabilities: string[] };
-      expect(manifest.capabilities).toEqual(['chat', 'files']);
+      expect(manifest.capabilities).toEqual(['chat', 'files', 'mcp-tools']);
     } finally {
       await app.close();
     }
