@@ -20,6 +20,7 @@ import { createApp } from '../src/app.js';
 import type { Config } from '../src/config.js';
 import { migrate, openDatabase } from '../src/db/migrate.js';
 import { type AppFiles, createAppFiles } from '../src/transport/app/files.js';
+import { createUiNotifyHub } from '../src/transport/app/mcp.js';
 import { type AppEvent, type AppOutbox, createAppOutbox } from '../src/transport/app/outbox.js';
 import { type AppTransport, createAppTransport } from '../src/transport/app/server.js';
 import type { AssistantReply, InboundMessage } from '../src/types.js';
@@ -91,6 +92,7 @@ async function startTransport(
     outbox,
     files,
     mcp: makeAppMcp(database, log, config),
+    uiNotify: createUiNotifyHub(log),
     relay: (msg) => {
       relayCalls.push(msg);
       return relay(msg);
@@ -223,14 +225,20 @@ describe('app transport auth (ADR 0011: 401 precedes 404)', () => {
     expect(await res.json()).toEqual({ ok: false, error: 'not found' });
   });
 
-  it('declared routes answer with a valid token; MCP is POST-only (405 otherwise)', async () => {
+  it('declared routes answer with a valid token; MCP rejects per the spec otherwise', async () => {
     // mcp-tools is DECLARED since Stage 27: POST /mcp answers (the SDK's 415
     // here — no JSON content-type on an empty body — not a gating 404).
     const mcp = await request(h.port, '/app/v1/mcp', { token: TOKEN, method: 'POST' });
     expect(mcp.status).toBe(415);
-    // The endpoint the contract exposes is POST only; GET/DELETE → 405.
+    // Stage 34 (deliberate change from the Stage 27 blanket 405): GET is now
+    // the streamable-HTTP SSE stream — but the spec requires the client to
+    // list text/event-stream in Accept, so a plain GET (fetch's */*) → 406.
+    // The stream itself is exercised in ui-list-changed.test.ts.
     const get = await request(h.port, '/app/v1/mcp', { token: TOKEN });
-    expect(get.status).toBe(405);
+    expect(get.status).toBe(406);
+    // Everything else (DELETE = "terminate session") stays 405.
+    const del = await request(h.port, '/app/v1/mcp', { token: TOKEN, method: 'DELETE' });
+    expect(del.status).toBe(405);
     // The files routes are DECLARED since Stage 26: they answer (with their
     // own errors here — no multipart body / unknown id), never a gating 404
     // that would make the manifest a lie in the other direction.
@@ -508,6 +516,7 @@ describe('containment: a synchronous route failure never escapes the dispatch (P
       outbox: broken,
       files,
       mcp: makeAppMcp(db, log, config),
+      uiNotify: createUiNotifyHub(log),
       relay: echoRelay,
       version: '0.0.0-test',
     });

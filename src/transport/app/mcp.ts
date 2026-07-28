@@ -45,6 +45,20 @@
  * _meta["ui/tools"] carries granted(name) ∩ requestedTools — [] this stage by
  * construction (no grant door exists until Stage 33; zero-trust). Flag off:
  * byte-identical to Stage 28 — the jobs entry only.
+ *
+ * Stage 34 (ADR 0015): the notification half. The per-POST server declares
+ * `resources: { listChanged: true }`, and this module exports the
+ * UiNotifyHub — the broadcaster behind GET /app/v1/mcp (the streamable-HTTP
+ * spec's optional SSE stream for server-initiated messages, mounted in
+ * server.ts under the same bearer/flag gate). Registry mutations (register /
+ * activate / grant / revoke, all via the CONTROL API) call
+ * notifyResourcesChanged() after commit; the hub writes one hand-authored
+ * SSE frame carrying the JSON-RPC notification
+ * {"jsonrpc":"2.0","method":"notifications/resources/list_changed"} to every
+ * open stream — wire-identical to the SDK's own emitter, chosen over a
+ * long-lived server+transport pair so the certified per-POST stateless
+ * posture (ADR 0012) stays untouched. Best-effort by spec: zero listeners is
+ * normal, writes never throw out of the hub, vanished clients are pruned.
  */
 
 import { readFileSync } from 'node:fs';
@@ -87,6 +101,69 @@ export interface AppMcpDeps {
 export interface AppMcp {
   /** Serve one POST /app/v1/mcp request (auth already passed in the dispatch). */
   handle(req: IncomingMessage, res: ServerResponse): Promise<void>;
+}
+
+/**
+ * The list_changed broadcaster (Stage 34, ADR 0015): tracks the open
+ * GET /app/v1/mcp SSE streams and writes the resources/list_changed
+ * notification to each. ONE hub is shared across both front doors (wired in
+ * src/app.ts): mutations arrive via the loopback control API while the
+ * streams live on the app transport.
+ */
+export interface UiNotifyHub {
+  /** Bind one open GET stream; returns the detach for the close handler. */
+  attach(res: ServerResponse): () => void;
+  /**
+   * Broadcast notifications/resources/list_changed to every open stream.
+   * Best-effort by spec: NEVER throws — zero listeners is a no-op, a dead
+   * stream is pruned (write-after-end guarded), a write failure is logged
+   * and must never fail the mutation that triggered it.
+   */
+  notifyResourcesChanged(): void;
+  /** Open-stream count (tests/observability). */
+  size(): number;
+}
+
+/**
+ * The one frame the hub emits — the JSON-RPC notification inside a standard
+ * SSE `message` event, byte-identical to what the SDK's
+ * sendResourceListChanged() would put on the wire.
+ */
+const LIST_CHANGED_FRAME =
+  'event: message\ndata: {"jsonrpc":"2.0","method":"notifications/resources/list_changed"}\n\n';
+
+export function createUiNotifyHub(log: Logger): UiNotifyHub {
+  const streams = new Set<ServerResponse>();
+  return {
+    attach(res: ServerResponse): () => void {
+      streams.add(res);
+      return (): void => {
+        streams.delete(res);
+      };
+    },
+    notifyResourcesChanged(): void {
+      for (const res of streams) {
+        // Write-after-end guard: a client that vanished without firing the
+        // close handler yet is pruned here instead of written to.
+        if (res.destroyed || res.writableEnded) {
+          streams.delete(res);
+          continue;
+        }
+        try {
+          res.write(LIST_CHANGED_FRAME);
+        } catch (err) {
+          // Emission is fire-and-forget: log, prune, never propagate.
+          streams.delete(res);
+          log.warn('list_changed emit failed; stream pruned', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+    },
+    size(): number {
+      return streams.size;
+    },
+  };
 }
 
 /** A rejected tool argument — maps to an isError tool result, like a 400 on the control API. */
@@ -321,7 +398,10 @@ export function createAppMcp(deps: AppMcpDeps): AppMcp {
   function buildServer(): Server {
     const server = new Server(
       { name: 'nightshift-assistant', version },
-      { capabilities: { tools: {}, resources: {} } },
+      // listChanged (Stage 34, ADR 0015): initialize now advertises that
+      // resources/list_changed notifications are emitted — over the GET
+      // stream this same endpoint serves, not over any POST response.
+      { capabilities: { tools: {}, resources: { listChanged: true } } },
     );
     server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
     server.setRequestHandler(ListResourcesRequestSchema, async () => ({

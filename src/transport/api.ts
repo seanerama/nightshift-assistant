@@ -46,6 +46,14 @@ export interface ApiDeps {
   remarkable: RemarkablePusher;
   /** Stage 31 (additive on control-api v1): the /api/v1/ui/* doors. */
   ui: UiRegistry;
+  /**
+   * Stage 34 (ADR 0015): called AFTER each committed registry mutation
+   * (register / activate / grant / revoke) so the shared UiNotifyHub can
+   * broadcast notifications/resources/list_changed to the app transport's
+   * open GET /app/v1/mcp streams. Fire-and-forget: the registry stays
+   * transport-free, and emission must never block or fail a mutation.
+   */
+  onUiMutate?: () => void;
   version: string;
 }
 
@@ -67,8 +75,25 @@ function tokenMatches(header: string | undefined, expected: string): boolean {
 }
 
 export function createApiHandler(deps: ApiDeps): ApiHandler {
-  const { config, log, jobs, sessions, deliver, promote, remarkable, ui, version } = deps;
+  const { config, log, jobs, sessions, deliver, promote, remarkable, ui, onUiMutate, version } =
+    deps;
   const startedAt = Date.now();
+
+  /**
+   * Stage 34: emit list_changed after a COMMITTED mutation — reached only
+   * after the registry call returned (a throw skips it via the outer catch).
+   * Swallow-everything guard: a broadcast problem must never surface on the
+   * mutation's response path (the hub itself also never throws).
+   */
+  const uiMutated = (): void => {
+    try {
+      onUiMutate?.();
+    } catch (err) {
+      log.warn('ui list_changed notify failed (mutation unaffected)', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
 
   /** Parse a POST body as JSON; an empty body is {} (rotate takes no required fields). */
   const readJsonBody = async (req: IncomingMessage): Promise<unknown> => {
@@ -373,6 +398,7 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
           ...(provenance === undefined ? {} : { provenance }),
         });
         respond(res, 200, { ok: true, resource });
+        uiMutated(); // register committed → list_changed (Stage 34)
         return;
       }
 
@@ -421,6 +447,7 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
             return;
           }
           respond(res, 200, { ok: true, resource });
+          uiMutated(); // activate committed → list_changed (Stage 34)
           return;
         }
 
@@ -489,6 +516,7 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
           return;
         }
         respond(res, 200, { ok: true, grant: ui.grant(name, tool, approvalText) });
+        uiMutated(); // grant committed → list_changed (Stage 34)
         return;
       }
 
@@ -514,6 +542,7 @@ export function createApiHandler(deps: ApiDeps): ApiHandler {
           return;
         }
         respond(res, 200, { ok: true, grant: ui.revoke(name, tool) });
+        uiMutated(); // revoke committed → list_changed (Stage 34)
         return;
       }
 

@@ -27,7 +27,7 @@ import {
 import { createApiHandler } from './transport/api.js';
 import { type AppSink, createNotifyFanout } from './transport/app/fanout.js';
 import { createAppFiles } from './transport/app/files.js';
-import { createAppMcp } from './transport/app/mcp.js';
+import { createAppMcp, createUiNotifyHub } from './transport/app/mcp.js';
 import { createAppOutbox } from './transport/app/outbox.js';
 import { type AppTransport, createAppTransport } from './transport/app/server.js';
 import { createDeliverer } from './transport/deliver.js';
@@ -232,6 +232,13 @@ export function createApp(
   // so with the flag off it is dark, dormant state.
   const uiRegistry = createUiRegistry(db);
 
+  // list_changed hub (Stage 34, ADR 0015): ONE broadcaster shared across both
+  // front doors — registry mutations arrive via the loopback control API
+  // below, while the GET /app/v1/mcp streams it writes to live on the app
+  // transport. Constructed unconditionally (cheap): with the app transport
+  // dark there are simply zero listeners, which is the spec's normal case.
+  const uiNotify = createUiNotifyHub(log);
+
   const server = createTransportServer({
     config,
     log,
@@ -287,6 +294,10 @@ export function createApp(
         log,
       }),
       ui: uiRegistry,
+      // Stage 34: after each committed registry mutation the door layer
+      // broadcasts list_changed — fire-and-forget, never on the mutation's
+      // failure path (the registry module itself stays transport-free).
+      onUiMutate: () => uiNotify.notifyResourcesChanged(),
       version: appVersion(),
     }),
   });
@@ -306,6 +317,8 @@ export function createApp(
           // MCP bridge (Stage 27, ADR 0012): the five tools are thin doors
           // over the SAME jobs/sessions handles the control API above uses.
           mcp: createAppMcp({ config, log, jobs, sessions, ui: uiRegistry, version: appVersion() }),
+          // Stage 34: the GET /app/v1/mcp streams this hub broadcasts to.
+          uiNotify,
           relay: (msg) => sessions.relay(msg),
           version: appVersion(),
         });
