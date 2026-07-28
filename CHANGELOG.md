@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.15.0
+
+### Other
+- [stage 38] Authoring fidelity: iterate from installed HTML, teach state-aware pages (#87)
+- [stage 37] UI-state store: ui_state_get/set tools, per-name persistence, doors + CLI (#86)
+- plan: stages 37-38 intake — ui-state store (ADR 0016, contracts/ui-state.md v1) + authoring fidelity; assessment addendum
+- ops: DoD step 1 + stage-36 live cert PASSED — habit-tracker@v1 authored from chat, installed with zero-trust allowlist
+- ops: v0.14.1 live — stdin authoring fix deployed, session rotated; owner phone DoD retry = stage-36 live-cert exit
+- release: v0.14.1 changelog — stage 36 stdin authoring fix
+
 ## 0.14.1
 
 ### Other
