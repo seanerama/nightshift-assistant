@@ -280,9 +280,10 @@ describe('control-enabled session spawn (Stage 5 gating)', () => {
     const mentioned = [...GENERATIVE_UI_PREAMBLE.matchAll(/nightshift ui ([a-z]+)\b/g)].map(
       (m) => m[1] as string,
     );
-    // The preamble teaches the FULL frozen verb family (contracts/generative-ui.md)…
+    // The preamble teaches the FULL frozen verb family (contracts/generative-ui.md,
+    // plus the contracts/ui-state.md `state` verb since Stage 38)…
     expect(new Set(mentioned)).toEqual(
-      new Set(['validate', 'install', 'list', 'show', 'activate', 'grant', 'revoke']),
+      new Set(['validate', 'install', 'list', 'show', 'activate', 'grant', 'revoke', 'state']),
     );
     // …and every mention must exist verbatim in the CLI's USAGE text — any
     // preamble verb the CLI does not spell is drift, caught here.
@@ -292,7 +293,7 @@ describe('control-enabled session spawn (Stage 5 gating)', () => {
       );
     }
     // Flag spellings the preamble instructs must exist in the CLI too.
-    for (const flag of ['--name', '--tools', '--provenance', '--approval']) {
+    for (const flag of ['--name', '--tools', '--provenance', '--approval', '--set', '--json']) {
       expect(GENERATIVE_UI_PREAMBLE).toContain(flag);
       expect(cli).toContain(flag);
     }
@@ -337,6 +338,32 @@ describe('control-enabled session spawn (Stage 5 gating)', () => {
     const cli = readFileSync(REAL_CLI, 'utf8');
     expect(cli).toContain('ui validate <file|->');
     expect(cli).toContain('ui install <file|->');
+  });
+
+  it('generative-ui preamble pins iteration fidelity + state discipline (Stage 38)', () => {
+    // Live defect 2026-07-28 (DoD step-2 run): v2 was regenerated from memory
+    // and the owner's UI-added data vanished. Iteration must start from the
+    // installed HTML, fetched via `ui show <name> <version> --json`.
+    expect(GENERATIVE_UI_PREAMBLE).toContain('nightshift ui show <name> <version> --json');
+    expect(GENERATIVE_UI_PREAMBLE).toContain('EDIT that HTML');
+    expect(GENERATIVE_UI_PREAMBLE).toContain('NEVER regenerate a page from memory');
+    expect(GENERATIVE_UI_PREAMBLE).toContain('carry forward');
+    // State tools (contracts/ui-state.md v1): both names, requested at
+    // install, loaded on ui/ready, written back on every mutation.
+    expect(GENERATIVE_UI_PREAMBLE).toContain('ui_state_get');
+    expect(GENERATIVE_UI_PREAMBLE).toContain('ui_state_set');
+    expect(GENERATIVE_UI_PREAMBLE).toContain('EVERY user mutation');
+    expect(GENERATIVE_UI_PREAMBLE).toContain('full-document replace');
+    expect(GENERATIVE_UI_PREAMBLE).toContain('64 KB');
+    // The ADR 0016 caveat: the grant ask must present namespace-wide trust.
+    expect(GENERATIVE_UI_PREAMBLE).toContain('namespace-wide in v1');
+    expect(GENERATIVE_UI_PREAMBLE).toContain("other pages' saved data");
+    // Degradable when ungranted (zero-trust default); presentational pages
+    // stay stateless.
+    expect(GENERATIVE_UI_PREAMBLE).toContain('when the tools are ungranted');
+    expect(GENERATIVE_UI_PREAMBLE).toContain('must NOT request state tools');
+    // Stage 36 invariant survives the edits: no temp-file path, ever.
+    expect(GENERATIVE_UI_PREAMBLE).not.toContain('temp file');
   });
 
   it('omits the type list while the registry kill-switch is OFF', async () => {
