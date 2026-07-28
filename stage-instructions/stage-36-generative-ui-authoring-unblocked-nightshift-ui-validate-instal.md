@@ -4,7 +4,7 @@
 - **Depends on:** 35
 - **Bug evidence:** live DoD run 2026-07-28 ~20:23–20:28 UTC, session
   84b4442c on prod — see feature-assessments/generative-ui-assessment.md
-  §Stage-36 addendum. Issue #81.
+  §Stage-36 addendum. Issue #82 (related worker-profile findings: #81).
 
 ## Objectives
 
