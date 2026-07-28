@@ -50,6 +50,21 @@ resource; 29 deploy dark + certify live. Dependencies: 25→24, 26→25, 27→24
 - **Owner Stage-0 exit** (phone chat + kill a real job) is owner-performed
   after Stage 29 and recorded as PENDING in STATUS.md, never claimed.
 
+## Amendment 1 (2026-07-28): chat-floor risk fired — stage 25 folded into 24
+
+The recorded "capability floor" risk materialized on the executor's first pass:
+`schemas/v1/manifest.json` requires `capabilities` to contain `"chat"` (an
+empty list fails `manifest.ok`), and the harness runs the chat-triad checks
+unconditionally (`messages.202`, `messages.dedup`, `messages.invalid.400`,
+`messages.notowner.403`, `outbox.ok`, `outbox.ack`, `outbox.reply`,
+`outbox.cursor.invalid`, `cursor.equivalence`) — "the chat triad is core and
+gates nothing" per the schema's own description. A skeleton-only stage can
+never reach exit 0, and ADR 0009 forbids both a subset gate and declaring an
+unserved capability. **Resolution:** stage 24 absorbs the former stage 25
+(chat triad + send fan-out); stage 25 superseded (file retained as record);
+issue #61 closed as folded into #60; stage 26 now depends on 24. Backlog is
+five live stages: 24, 26, 27, 28, 29 (deps: 26→24, 27→24, 28→27, 29→26+28).
+
 ## Out of scope (rejected for this effort)
 
 Push notifications, token streaming, generative UI, Webex removal, watchdog

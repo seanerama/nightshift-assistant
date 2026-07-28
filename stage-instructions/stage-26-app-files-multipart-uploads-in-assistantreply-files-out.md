@@ -1,7 +1,10 @@
 # Stage 26: App files: multipart uploads in, AssistantReply files out
 
 - **Type:** feature
-- **Depends on:** 25
+- **Depends on:** 24
+
+> **Dependency amended 2026-07-28:** originally depended on stage 25, which was
+> superseded and folded into stage 24 (see Amendment 1 in the stage-24 spec).
 
 ## Objectives
 
