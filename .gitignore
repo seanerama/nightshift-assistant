@@ -2,6 +2,9 @@ node_modules/
 dist/
 # Runtime state (SQLite lives here; never committed)
 data/
+# App-transport upload landing dir (Stage 26) — created in the daemon's cwd
+# (the CI conformance job runs the daemon from the checkout root)
+uploads/
 *.tgz
 .DS_Store
 .env
