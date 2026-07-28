@@ -14,7 +14,7 @@
       "stages": "1-23 live: … stage 23 adds URL HANDLING to the conversational preamble (URL work is dispatched to fetch-capable workers, never dead-ended)",
       "verified": "2026-07-25 19:42Z: v0.12.2 deployed, ACTIVE; URL HANDLING line confirmed in dist; session rotated 51292b5e→de76f23a; seed audited — stale paste-belief confined to 2026-07-25.md (not seed material; latest is -2 stub + operator note). Webex smoke (docs/smoke/stage-23.md steps 2–4) PENDING OWNER — only the owner can message the bot",
       "commit": "1d45c0f",
-      "generative_ui": "ENABLED, v0.14.1 stdin authoring fix live 2026-07-28 — ui validate - verified on host (exit 0), session rotated (8c46f6d7, corrected preamble); phone DoD retry pending = stage-36 live-cert exit (permission matcher on heredoc command)"
+      "generative_ui": "LIVE-CERTIFIED (partial) 2026-07-28: DoD step 1 PASSED — habit-tracker@v1 authored in chat via stdin heredoc (validate revise-loop exercised, installed active, zero tools); stage-36 live-cert exit PASSED (matcher accepts heredoc'd nightshift command). Remaining: DoD step 2 (iterate→v2+rollback), step 3 (grant conversation) — owner-driven"
     }
   },
   "secret_locations": [
