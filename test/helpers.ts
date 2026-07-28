@@ -13,6 +13,7 @@ import type { Logger } from '../src/log.js';
 import type { SessionManager } from '../src/session/manager.js';
 import { type AppMcp, createAppMcp } from '../src/transport/app/mcp.js';
 import { createUiRegistry } from '../src/ui/registry.js';
+import { createUiState } from '../src/ui/state.js';
 
 export const AGENT_STUB = fileURLToPath(new URL('./fixtures/agent-stub.cjs', import.meta.url));
 export const WORKER_STUB = fileURLToPath(new URL('./fixtures/worker-stub.cjs', import.meta.url));
@@ -133,6 +134,7 @@ export function makeAppMcp(db: Database.Database, log: Logger, config: Config): 
     jobs: createJobRunner(db, log, config),
     sessions,
     ui: createUiRegistry(db),
+    uiState: createUiState(db),
     version: '0.0.0-test',
   });
 }

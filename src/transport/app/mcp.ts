@@ -4,13 +4,18 @@
  * app transport dispatch — so it inherits the bearer gate (401 precedes 404),
  * the APP_TRANSPORT_ENABLED flag, and the containment posture.
  *
- * Exactly FIVE tools, each a thin door over the SAME internals the control
- * API's handlers call (src/transport/api.ts → App.jobs / App.sessions):
- * status, jobs_list, jobs_submit, jobs_kill, session_rotate. The tool layer
- * validates arguments and translates shapes — no business logic, and the
- * results carry the frozen JobRecord/RotationRecord/status shapes unmodified.
- * Behavior parity with the control API (and therefore the nightshift CLI) is
- * by construction: a divergence is a bug by definition (ADR 0012).
+ * The certified FIVE tools, each a thin door over the SAME internals the
+ * control API's handlers call (src/transport/api.ts → App.jobs /
+ * App.sessions): status, jobs_list, jobs_submit, jobs_kill, session_rotate.
+ * The tool layer validates arguments and translates shapes — no business
+ * logic, and the results carry the frozen JobRecord/RotationRecord/status
+ * shapes unmodified. Behavior parity with the control API (and therefore the
+ * nightshift CLI) is by construction: a divergence is a bug by definition
+ * (ADR 0012). Stage 37 (contracts/ui-state.md, ADR 0016) makes the catalog
+ * flag-conditional: with NIGHTSHIFT_GENERATIVE_UI_ENABLED on, ui_state_get /
+ * ui_state_set are APPENDED (thin doors over src/ui/state.ts — the same
+ * truth as GET/POST /api/v1/ui/state/<name>); with it off, the advertised
+ * catalog is the certified five, byte-identical.
  *
  * Transport posture: STATELESS streamable HTTP (a fresh SDK server + transport
  * per POST, `sessionIdGenerator: undefined`, JSON responses) — every certified
@@ -78,7 +83,8 @@ import { JobError, type JobRunner } from '../../jobs/runner.js';
 import type { Logger } from '../../log.js';
 import type { SessionManager } from '../../session/manager.js';
 import type { JobStatus, JobSubmit } from '../../types.js';
-import { type UiRegistry, uiResourceUri } from '../../ui/registry.js';
+import { type UiRegistry, UiRegistryError, uiResourceUri } from '../../ui/registry.js';
+import type { UiState } from '../../ui/state.js';
 import { readRawBody } from '../server.js';
 
 /** Mirrors src/transport/api.ts — the job-lifecycle contract's states. */
@@ -95,6 +101,8 @@ export interface AppMcpDeps {
   sessions: SessionManager;
   /** Stage 31: the registry the resource surface reflects when the flag is on. */
   ui: UiRegistry;
+  /** Stage 37 (contracts/ui-state.md): behind ui_state_get/ui_state_set. */
+  uiState: UiState;
   version: string;
 }
 
@@ -170,10 +178,13 @@ export function createUiNotifyHub(log: Logger): UiNotifyHub {
 class ToolArgumentError extends Error {}
 
 /**
- * The five tools, in a fixed order with `status` FIRST: the conformance
- * harness calls the first advertised tool with empty arguments, and status is
- * the read-only no-argument door. These names are frozen surface — Stage 28's
- * UI resource allowlist references them; renaming is a breaking change.
+ * The five certified tools, in a fixed order with `status` FIRST: the
+ * conformance harness calls the first advertised tool with empty arguments,
+ * and status is the read-only no-argument door. These names are frozen
+ * surface — Stage 28's UI resource allowlist references them; renaming is a
+ * breaking change. With NIGHTSHIFT_GENERATIVE_UI_ENABLED off this const IS
+ * the advertised catalog, byte-identical to the certified surface (do not
+ * touch entries or order); with it on, STATE_TOOLS below is APPENDED.
  */
 const TOOLS = [
   {
@@ -243,6 +254,45 @@ const TOOLS = [
       properties: {
         reason: { type: 'string', enum: ['manual'], description: 'Only "manual" is accepted.' },
       },
+    },
+  },
+];
+
+/**
+ * Stage 37 (contracts/ui-state.md v1, ADR 0016): the two ui-state tools,
+ * appended AFTER the certified five only when NIGHTSHIFT_GENERATIVE_UI_ENABLED
+ * is on — flag off, the advertised catalog stays byte-identical to TOOLS.
+ * Thin doors over src/ui/state.ts (same truth as the /api/v1/ui/state/<name>
+ * control doors). Grantable to generated pages via the ADR 0015 flow —
+ * NOTE the contract's stated v1 caveat: tools/call carries no caller
+ * identity, so a granted page can address ANY resource's state.
+ */
+const STATE_TOOLS = [
+  {
+    name: 'ui_state_get',
+    description:
+      "A UI resource's persisted state document (contracts/ui-state.md): the per-name JSON " +
+      'value plus updatedAt — both null before the first set. State attaches to the resource ' +
+      'NAME and survives restarts, version iteration, and rollback.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: { name: { type: 'string', description: 'Registered UI resource name.' } },
+      required: ['name'],
+    },
+  },
+  {
+    name: 'ui_state_set',
+    description:
+      "Replace a UI resource's persisted state document (contracts/ui-state.md): value is any " +
+      'JSON (object/array/scalar), serialized <= 65536 bytes UTF-8. Full-document replace, ' +
+      'last-write-wins — no merge or keyed access in v1.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        name: { type: 'string', description: 'Registered UI resource name.' },
+        value: { description: 'The whole new state document — any JSON value.' },
+      },
+      required: ['name', 'value'],
     },
   },
 ];
@@ -317,7 +367,7 @@ function normalizeInitialize(message: unknown): unknown {
 }
 
 export function createAppMcp(deps: AppMcpDeps): AppMcp {
-  const { config, jobs, sessions, ui, version } = deps;
+  const { config, jobs, sessions, ui, uiState, version } = deps;
   const startedAt = Date.now();
 
   /**
@@ -389,9 +439,38 @@ export function createAppMcp(deps: AppMcpDeps): AppMcp {
         }
         return { ok: true, rotation: await sessions.rotate('manual') };
       }
+      case 'ui_state_get': {
+        // Stage 37 — mirrors GET /api/v1/ui/state/<name>. Flag off: the tool
+        // is not advertised, so the name is as unknown as it was before.
+        if (!config.generativeUiEnabled) break;
+        const stateName = args.name;
+        if (typeof stateName !== 'string' || stateName === '') {
+          throw new ToolArgumentError('ui_state_get requires "name" (non-empty string)');
+        }
+        // Unknown resource name → UiRegistryError → isError (never protocol-level).
+        return { ok: true, ...uiState.get(stateName) };
+      }
+      case 'ui_state_set': {
+        // Stage 37 — mirrors POST /api/v1/ui/state/<name> body { value }.
+        if (!config.generativeUiEnabled) break;
+        const stateName = args.name;
+        if (typeof stateName !== 'string' || stateName === '') {
+          throw new ToolArgumentError('ui_state_set requires "name" (non-empty string)');
+        }
+        if (!('value' in args)) {
+          throw new ToolArgumentError('ui_state_set requires "value" (any JSON document)');
+        }
+        // Unknown name / oversize / non-JSON → UiRegistryError → isError.
+        const set = uiState.set(stateName, args.value);
+        return { ok: true, name: set.name, updatedAt: set.updatedAt };
+      }
       default:
-        throw new McpError(ErrorCode.InvalidParams, `unknown tool: ${name}`);
+        break;
     }
+    // Unknown tool — including a ui-state tool while the flag is off
+    // (unadvertised = nonexistent): protocol-level InvalidParams, exactly the
+    // pre-Stage-37 behavior.
+    throw new McpError(ErrorCode.InvalidParams, `unknown tool: ${name}`);
   }
 
   /** A fresh SDK server per request (stateless mode requires it). */
@@ -403,7 +482,12 @@ export function createAppMcp(deps: AppMcpDeps): AppMcp {
       // stream this same endpoint serves, not over any POST response.
       { capabilities: { tools: {}, resources: { listChanged: true } } },
     );
-    server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
+    // Stage 37: the catalog is a function of the flag — the certified five
+    // byte-identical when off (same entries, same order), five + the two
+    // ui-state tools appended when on (status stays FIRST either way).
+    server.setRequestHandler(ListToolsRequestSchema, async () => ({
+      tools: config.generativeUiEnabled ? [...TOOLS, ...STATE_TOOLS] : TOOLS,
+    }));
     server.setRequestHandler(ListResourcesRequestSchema, async () => ({
       resources: [
         {
@@ -472,9 +556,15 @@ export function createAppMcp(deps: AppMcpDeps): AppMcp {
         const body = await callTool(request.params.name, args);
         return { content: [{ type: 'text' as const, text: JSON.stringify(body) }] };
       } catch (err) {
-        // Rejected input / JobError → a tool-level error result carrying the
-        // control API's error body — the same message a 400 would carry there.
-        if (err instanceof ToolArgumentError || err instanceof JobError) {
+        // Rejected input / JobError / UiRegistryError (Stage 37: unknown
+        // state name, oversize, non-JSON) → a tool-level error result carrying
+        // the control API's error body — the same message a 400/404/422 would
+        // carry there. NEVER a protocol-level error for rejected input.
+        if (
+          err instanceof ToolArgumentError ||
+          err instanceof JobError ||
+          err instanceof UiRegistryError
+        ) {
           return {
             content: [
               { type: 'text' as const, text: JSON.stringify({ ok: false, error: err.message }) },

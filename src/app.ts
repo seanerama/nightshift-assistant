@@ -36,6 +36,7 @@ import { AttachmentError, createSender } from './transport/send.js';
 import { createTransportServer } from './transport/server.js';
 import { createWebexClient } from './transport/webex.js';
 import { createUiRegistry } from './ui/registry.js';
+import { createUiState } from './ui/state.js';
 
 /** How often the in-daemon daily-rotation check runs (only when enabled). */
 const DAILY_CHECK_INTERVAL_MS = 60_000;
@@ -232,6 +233,13 @@ export function createApp(
   // so with the flag off it is dark, dormant state.
   const uiRegistry = createUiRegistry(db);
 
+  // UI-state store (Stage 37, contracts/ui-state.md, ADR 0016): one JSON
+  // document per registered resource name, behind ui_state_get/ui_state_set
+  // and the /api/v1/ui/state/<name> doors. Constructed unconditionally, like
+  // the registry (migration 0010 applies either way) — the doors and the
+  // tool catalog own the flag, so with it off this is dormant state.
+  const uiState = createUiState(db);
+
   // list_changed hub (Stage 34, ADR 0015): ONE broadcaster shared across both
   // front doors — registry mutations arrive via the loopback control API
   // below, while the GET /app/v1/mcp streams it writes to live on the app
@@ -294,6 +302,7 @@ export function createApp(
         log,
       }),
       ui: uiRegistry,
+      uiState,
       // Stage 34: after each committed registry mutation the door layer
       // broadcasts list_changed — fire-and-forget, never on the mutation's
       // failure path (the registry module itself stays transport-free).
@@ -316,7 +325,15 @@ export function createApp(
           files: appSink.files,
           // MCP bridge (Stage 27, ADR 0012): the five tools are thin doors
           // over the SAME jobs/sessions handles the control API above uses.
-          mcp: createAppMcp({ config, log, jobs, sessions, ui: uiRegistry, version: appVersion() }),
+          mcp: createAppMcp({
+            config,
+            log,
+            jobs,
+            sessions,
+            ui: uiRegistry,
+            uiState,
+            version: appVersion(),
+          }),
           // Stage 34: the GET /app/v1/mcp streams this hub broadcasts to.
           uiNotify,
           relay: (msg) => sessions.relay(msg),

@@ -206,12 +206,16 @@ describe('ui registry (Stage 31, contracts/generative-ui.md)', () => {
   });
 
   it('rejects requestedTools outside the frozen MCP catalog', () => {
+    // Stage 37 pin update (deliberate): the grantable universe grew by the
+    // two ui-state tools (contracts/ui-state.md) — five certified + two.
     expect(MCP_TOOL_NAMES).toEqual([
       'status',
       'jobs_list',
       'jobs_submit',
       'jobs_kill',
       'session_rotate',
+      'ui_state_get',
+      'ui_state_set',
     ]);
     expect(() =>
       registry.install({ name: 'good-page', html: GOOD_HTML, requestedTools: ['jobs_promote'] }),
