@@ -209,6 +209,15 @@ describe('app UI resource (ui://nightshift/jobs@v1, Stage 28)', () => {
       expect((res.body.result?.tools ?? []).map((t) => t.name)).toEqual(FIVE_TOOLS);
     });
 
+    it('the manifest declares mcp-apps-ui (binding, ADR 0009 — the surface exists)', async () => {
+      const res = await fetch(`${appBase}/app/v1/manifest`, {
+        headers: { authorization: `Bearer ${APP_TOKEN}` },
+      });
+      expect(res.status).toBe(200);
+      const manifest = (await res.json()) as { capabilities: string[] };
+      expect(manifest.capabilities).toContain('mcp-apps-ui');
+    });
+
     it('the bearer gate is in front of the resource surface (401, app error shape)', async () => {
       // Inherited from the app transport dispatch (401 precedes 404) — proven,
       // not assumed: no token and a wrong token both refuse resources/*.
