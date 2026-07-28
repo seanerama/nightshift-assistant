@@ -54,10 +54,10 @@ const AGENT_NAME = 'nightshift-assistant';
  * Declaring is BINDING (ADR 0009): "chat" is the schema-mandated floor
  * (Stage 24); "files" landed with Stage 26's upload→attach→retrieve loop
  * harness-green; "mcp-tools" landed with Stage 27's five thin doors (harness
- * mcp.initialize + mcp.tools green). mcp-apps-ui is added ONLY when Stage 28's
- * checks pass; declaring earlier makes the manifest a lie.
+ * mcp.initialize + mcp.tools green); "mcp-apps-ui" landed with Stage 28's
+ * ui://nightshift/jobs@v1 resource (harness mcp.ui green — zero skips).
  */
-const CAPABILITIES: readonly string[] = ['chat', 'files', 'mcp-tools'];
+const CAPABILITIES: readonly string[] = ['chat', 'files', 'mcp-tools', 'mcp-apps-ui'];
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 

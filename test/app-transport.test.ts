@@ -1,8 +1,8 @@
 /**
  * Stage 24 app transport (contracts/app-ingress.md v1, pinned to
  * agent-app-contract#v1.0.0; ADR 0009–0011): bearer auth with 401-before-404,
- * health + manifest (capabilities exactly ["chat","files","mcp-tools"] since
- * Stage 27),
+ * health + manifest (capabilities exactly
+ * ["chat","files","mcp-tools","mcp-apps-ui"] since Stage 28),
  * the chat triad (202 before relay, durable dedup across restart, SSE
  * Last-Event-ID resume == ?after=), the migration ladder, and the dark-flag /
  * fail-closed startup wiring. The CI conformance job is the contract test;
@@ -259,14 +259,14 @@ describe('health + manifest', () => {
     expect(body.uptimeSec).toBeGreaterThanOrEqual(0);
   });
 
-  it('declares capabilities EXACTLY ["chat","files","mcp-tools"] — served for real, nothing unserved', async () => {
+  it('declares capabilities EXACTLY ["chat","files","mcp-tools","mcp-apps-ui"] — served for real, nothing unserved', async () => {
     const res = await request(h.port, '/app/v1/manifest', { token: TOKEN });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
       schema: 1,
       agent: { name: 'nightshift-assistant', version: '0.0.0-test' },
       contract: { name: 'app-ingress', version: 1 },
-      capabilities: ['chat', 'files', 'mcp-tools'],
+      capabilities: ['chat', 'files', 'mcp-tools', 'mcp-apps-ui'],
     });
   });
 });
@@ -693,7 +693,7 @@ describe('createApp wiring (dark flag + fail-closed startup)', () => {
       });
       expect(res.status).toBe(200);
       const manifest = (await res.json()) as { capabilities: string[] };
-      expect(manifest.capabilities).toEqual(['chat', 'files', 'mcp-tools']);
+      expect(manifest.capabilities).toEqual(['chat', 'files', 'mcp-tools', 'mcp-apps-ui']);
     } finally {
       await app.close();
     }

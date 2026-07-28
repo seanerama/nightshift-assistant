@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "Single-user personal assistant on Webex: conversational front door to autonomous app builds, content pipelines, research, and server ops. Successor to the NSAF core.",
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "tsc -p tsconfig.build.json && mkdir -p dist/transport/app/resources && cp src/transport/app/resources/*.html dist/transport/app/resources/",
     "typecheck": "tsc -p tsconfig.json",
     "lint": "biome check .",
     "test": "vitest run",
