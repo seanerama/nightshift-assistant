@@ -25,8 +25,9 @@ import {
   type SessionManagerHooks,
 } from './session/manager.js';
 import { createApiHandler } from './transport/api.js';
-import { createNotifyFanout } from './transport/app/fanout.js';
-import { type AppOutbox, createAppOutbox } from './transport/app/outbox.js';
+import { type AppSink, createNotifyFanout } from './transport/app/fanout.js';
+import { createAppFiles } from './transport/app/files.js';
+import { createAppOutbox } from './transport/app/outbox.js';
 import { type AppTransport, createAppTransport } from './transport/app/server.js';
 import { createDeliverer } from './transport/deliver.js';
 import { createRemarkablePusher } from './transport/remarkable.js';
@@ -93,11 +94,18 @@ export function createApp(
   const webex = createWebexClient(config);
   const sender = createSender(webex, log, config);
 
-  // App transport outbox (Stage 24, ADR 0009–0011): constructed ONLY when the
-  // app listener will actually start — flag on AND token set. Flag on with
-  // the token unset refuses the listener (fail closed, clear log) while the
-  // daemon stays healthy; flag off is fully dark (no route, no outbox rows).
-  let appOutbox: AppOutbox | null = null;
+  // The allow-listed root set every path-confined capability shares (Stage 10
+  // deliver + Stage 19 reMarkable push + Stage 26 app files): ~/projects and
+  // the app's jobs/ + logs/ dirs. The app-file registry adds uploads/.
+  const confinedRoots = [join(home, 'projects'), join(appDir, 'jobs'), join(appDir, 'logs')];
+  const uploadsDir = join(appDir, 'uploads');
+
+  // App transport sink (Stages 24+26, ADR 0009–0011): outbox + file registry,
+  // constructed ONLY when the app listener will actually start — flag on AND
+  // token set. Flag on with the token unset refuses the listener (fail
+  // closed, clear log) while the daemon stays healthy; flag off is fully dark
+  // (no route, no outbox rows, no file ids).
+  let appSink: AppSink | null = null;
   if (config.appTransportEnabled) {
     if (config.appToken === '') {
       log.error(
@@ -105,14 +113,17 @@ export function createApp(
           'the app listener fails closed; the rest of the daemon runs normally',
       );
     } else {
-      appOutbox = createAppOutbox(db, log);
+      appSink = {
+        outbox: createAppOutbox(db, log),
+        files: createAppFiles(db, log, { uploadsDir, roots: [...confinedRoots, uploadsDir] }),
+      };
     }
   }
   // Proactive notices fan out to the app outbox BESIDE Webex (ADR 0010): the
   // Webex leg is byte-identical (same sender, same args); dark → the notifier
   // IS the Webex sender. The webhook reply path keeps `sender` directly —
   // conversational replies are not proactive traffic.
-  const notifier = createNotifyFanout(sender, appOutbox, log);
+  const notifier = createNotifyFanout(sender, appSink, log);
 
   // The owner's most recent roomId, for proactive notices (rotation, job
   // finishes) and /api/v1/deliver. Persisted in the settings table (migration
@@ -212,10 +223,6 @@ export function createApp(
     home,
   });
 
-  // The allow-listed root set both path-confined capabilities share (Stage 10
-  // deliver + Stage 19 reMarkable push): ~/projects and the app's jobs/ + logs/.
-  const confinedRoots = [join(home, 'projects'), join(appDir, 'jobs'), join(appDir, 'logs')];
-
   const server = createTransportServer({
     config,
     log,
@@ -274,17 +281,18 @@ export function createApp(
     }),
   });
 
-  // App transport (Stage 24, contracts/app-ingress.md): its own node:http
+  // App transport (Stages 24+26, contracts/app-ingress.md): its own node:http
   // server(s) on NIGHTSHIFT_APP_BIND/PORT — the loopback daemon server above
-  // is untouched. Constructed only when the outbox exists (flag on + token
+  // is untouched. Constructed only when the sink exists (flag on + token
   // set); relay is the same frozen seam the webhook path consumes.
   const appTransport: AppTransport | null =
-    appOutbox === null
+    appSink === null
       ? null
       : createAppTransport({
           config,
           log,
-          outbox: appOutbox,
+          outbox: appSink.outbox,
+          files: appSink.files,
           relay: (msg) => sessions.relay(msg),
           version: appVersion(),
         });
