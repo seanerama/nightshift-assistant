@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.14.1
+
+### Other
+- [stage 36] Generative-UI authoring unblocked: ui validate/install read HTML from stdin via - (#83)
+- plan: stage 36 spec — correct work-item ref (#82; #81 is the worker-profile bug)
+- plan: stage 36 intake — ui validate/install stdin form unblocks the session authoring loop (live DoD blocker, assessment addendum)
+- ops: generative-UI ENABLED live on prod — flag on, session rotated, harness 22/23 (known files.roundtrip flake); phone DoD pending
+- ops: v0.14.0 deployed DARK on prod (91c4c47) — flag-off smoke passed; generative-UI awaits owner flag-flip + phone DoD
+- release: v0.14.0 changelog (+0.13.0 backfill) — generative-UI stages 31-35
+
 ## 0.14.0
 
 ### Other
