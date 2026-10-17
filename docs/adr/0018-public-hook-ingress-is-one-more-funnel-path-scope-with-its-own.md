@@ -76,3 +76,14 @@ on the internet, and share that token with the phone.
   wait is bounded and the poll fallback is the real delivery guarantee.
 - Future adapters (GitHub, email-forward, etc.) slot in as `/hook/v1/<adapter>`
   without a new Funnel scope.
+
+## Amendment 1 (2026-10-17, owner decision at deploy): dedicated Funnel port
+
+The `/hook/v1` scope is served on Funnel port **10000**
+(`https://3090-tuf.taile0ffc4.ts.net:10000/hook/v1`), not on 443 next to `/webhook`.
+This is still exactly one path scope, and the target is still `127.0.0.1:3777/hook/v1`.
+The hook can now be rolled back as a unit (`tailscale funnel --https=10000 off`)
+without any risk to the Webex webhooks on 443. Funnel only permits ports 443,
+8443 and 10000. On this host, 8443 is a tailnet-only serve of an unrelated app
+and must not be Funneled. The contract is unchanged: it fixes the path, not the
+public port.

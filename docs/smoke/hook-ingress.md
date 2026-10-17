@@ -176,3 +176,12 @@ pending session `1b262322` ("Session ID … already in use"). Owner re-logged in
 operator closed session row 51 (`died`, DB backup
 `nightshift-20261017-041049-pre-unwedge.db`) and the next turn started session
 52 cleanly. Hook mechanics were unaffected.
+
+### Port move — 2026-10-17 (owner decision)
+
+The hook moved from `:443/hook/v1` to its own Funnel port,
+`https://3090-tuf.taile0ffc4.ts.net:10000/hook/v1`. Re-verified at the edge:
+`/hook/v1/*` returns 401 with no token. An authenticated sync request returned
+200 `PONG10000`. `:10000` `/api/v1/status`, `/app/v1/health`, `/health`,
+`/webhook` and `/` all return 404. Old `:443/hook/v1` returns 404. `:443/webhook`
+still returns 401 when unsigned. For future runs, set `BASE=https://3090-tuf.taile0ffc4.ts.net:10000`.
