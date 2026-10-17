@@ -289,27 +289,39 @@ export function createHookHandler(deps: HookDeps): HookHandler {
       receivedAt: now().toISOString(),
     };
     const startedAt = nowMs();
-    return Promise.resolve()
-      .then(() => relay(inbound))
-      .then(
-        (reply): HookStatus => {
-          settle(messageId, 'completed', reply.text, reply.rotated, reply.files.length);
+    return (
+      Promise.resolve()
+        .then(() => relay(inbound))
+        .then((reply: AssistantReply | undefined): HookStatus => {
+          // Defensive reading: a reply without readable text is a failed turn;
+          // a missing files/rotated is tolerated (counted as 0 / false).
+          if (typeof reply !== 'object' || reply === null || typeof reply.text !== 'string') {
+            throw new Error('malformed reply');
+          }
+          const files: unknown = reply.files;
+          const filesOmitted = Array.isArray(files) ? files.length : 0;
+          settle(messageId, 'completed', reply.text, reply.rotated === true, filesOmitted);
           return 'completed';
-        },
-        (): HookStatus => {
-          // relay() never throws per contract; this is the defensive branch.
+        })
+        // ONE catch for both a rejecting relay() (never-throws per contract —
+        // defensive) and any throw in the success path above: the row always
+        // reaches a terminal state, so no pending-cap slot leaks.
+        .catch((): HookStatus => {
           settle(messageId, 'failed', HOOK_FAILED_TEXT, false, 0);
           return 'failed';
-        },
-      )
-      .then((status) => {
-        log.info('hook turn settled', {
-          messageId,
-          source,
-          status,
-          latencyMs: nowMs() - startedAt,
-        });
-      });
+        })
+        .then((status) => {
+          log.info('hook turn settled', {
+            messageId,
+            source,
+            status,
+            latencyMs: nowMs() - startedAt,
+          });
+        })
+        // Terminal guard: the returned promise truly never rejects (settle and
+        // the logger are not expected to throw; this makes it unconditional).
+        .catch(() => undefined)
+    );
   };
 
   /** Resolve when the turn settles OR the wait elapses, whichever is first. */

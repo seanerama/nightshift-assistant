@@ -15,7 +15,7 @@
  */
 
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { createServer, type Server } from 'node:http';
+import { createServer, request as httpRequest, type Server } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type Database from 'better-sqlite3';
@@ -215,7 +215,9 @@ describe('hook ingress through createApp (real server, stub agent)', () => {
   });
 
   it('slow turn + wait:1 ⇒ 202 pending + poll path; the poll later reads completed', async () => {
-    process.env.AGENT_STUB_DELAY_MS = '2000';
+    // The turn far outlasts the wait, so a slow runner cannot turn the 202
+    // into a 200; the 202 itself proves the wait was bounded.
+    process.env.AGENT_STUB_DELAY_MS = '3000';
     await startApp(hookConfig());
     const t0 = Date.now();
     const res = await call(base, '/hook/v1/messages', {
@@ -229,19 +231,18 @@ describe('hook ingress through createApp (real server, stub agent)', () => {
       messageId: 'slow-1',
       poll: '/hook/v1/messages/slow-1',
     });
-    expect(elapsed).toBeGreaterThanOrEqual(900);
-    expect(elapsed).toBeLessThan(1900);
+    expect(elapsed).toBeGreaterThanOrEqual(900); // the wait was honored, not skipped
 
     const pending = await call(base, '/hook/v1/messages/slow-1');
     expect(pending.status).toBe(200);
     expect(pending.body.status).toBe('pending');
 
     let polled: HookResponse | null = null;
-    const deadline = Date.now() + 8000;
+    const deadline = Date.now() + 12_000;
     while (Date.now() < deadline) {
       polled = await call(base, '/hook/v1/messages/slow-1');
       if (polled.body.status !== 'pending') break;
-      await new Promise((r) => setTimeout(r, 200));
+      await new Promise((r) => setTimeout(r, 1000)); // within the 60/min poll bucket
     }
     expect(polled?.status).toBe(200);
     expect(polled?.body).toEqual({
@@ -254,14 +255,14 @@ describe('hook ingress through createApp (real server, stub agent)', () => {
     const unknown = await call(base, '/hook/v1/messages/never-submitted');
     expect(unknown.status).toBe(404);
     expect(unknown.body).toEqual({ ok: false, error: 'not found' });
-  });
+  }, 20_000);
 
-  it('wait:0 ⇒ immediate 202 even for a fast turn', async () => {
-    process.env.AGENT_STUB_DELAY_MS = '600';
+  it('wait:0 ⇒ immediate 202 (no wait at all)', async () => {
+    // A turn longer than any plausible request overhead: a 202 (not 200)
+    // proves the POST answered without waiting — no wall-clock assertion.
+    process.env.AGENT_STUB_DELAY_MS = '3000';
     await startApp(hookConfig());
-    const t0 = Date.now();
     const res = await call(base, '/hook/v1/messages', { body: { text: 'later', wait: 0 } });
-    expect(Date.now() - t0).toBeLessThan(500);
     expect(res.status).toBe(202);
     expect(res.body.status).toBe('pending');
     expect(res.body.poll).toBe(`/hook/v1/messages/${String(res.body.messageId)}`);
@@ -453,16 +454,122 @@ describe('hook handler (direct: injected relay + clock)', () => {
     expect(JSON.stringify(h.log.entries)).not.toContain('private detail');
   });
 
-  it('413 over 16 KiB; 400 on bad JSON / content-type / text / source / messageId / wait', async () => {
+  it('a malformed relay reply never leaves a pending row or an unhandled rejection', async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      // Missing files (and rotated) only ⇒ still a readable reply: completed, 0 omitted.
+      const noFiles = await startDirect(
+        async () => ({ text: 'partial' }) as unknown as AssistantReply,
+      );
+      h = noFiles;
+      const a = await call(noFiles.base, '/hook/v1/messages', {
+        body: { text: 'x', messageId: 'm-nofiles' },
+      });
+      expect(a.status).toBe(200);
+      expect(a.body).toEqual({
+        ok: true,
+        status: 'completed',
+        messageId: 'm-nofiles',
+        reply: { text: 'partial', rotated: false, filesOmitted: 0 },
+      });
+      await noFiles.close();
+      h = null;
+
+      // No reply at all (undefined / non-object / text not a string) ⇒ failed.
+      for (const bad of [undefined, null, 42, { files: [] }]) {
+        const hd = await startDirect(async () => bad as unknown as AssistantReply);
+        h = hd;
+        const res = await call(hd.base, '/hook/v1/messages', {
+          body: { text: 'x', messageId: 'm-bad' },
+        });
+        expect(res.status, String(bad)).toBe(200);
+        expect(res.body.status, String(bad)).toBe('failed');
+        expect((res.body.reply as { text: string }).text).toMatch(/^failed:/);
+        const pending = hd.db
+          .prepare("SELECT COUNT(*) AS n FROM hook_messages WHERE status = 'pending'")
+          .get() as { n: number };
+        expect(pending.n).toBe(0); // no leaked pending-cap slot
+        await hd.close();
+        h = null;
+      }
+      // Let any stray rejection surface before asserting.
+      await new Promise((r) => setTimeout(r, 50));
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
+
+  it('413 is enforced WHILE streaming: a body that never ends still gets its 413', async () => {
+    const hd = await startDirect();
+    h = hd;
+    const url = new URL(`${hd.base}/hook/v1/messages`);
+    const chunk = Buffer.alloc(64 * 1024, 0x61);
+    const limit = 4 * 1024 * 1024; // safety stop well past the 16 KiB cap
+    const result = await new Promise<{ status: number; sentBytes: number; body: string }>(
+      (resolve, reject) => {
+        let sent = 0;
+        let answered = false;
+        const req = httpRequest(
+          {
+            host: url.hostname,
+            port: url.port,
+            path: url.pathname,
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${TOKEN}`,
+              'Content-Type': 'application/json',
+              'Transfer-Encoding': 'chunked', // no Content-Length: the cap must bite mid-stream
+            },
+          },
+          (res) => {
+            answered = true;
+            let body = '';
+            res.setEncoding('utf8');
+            res.on('data', (d: string) => {
+              body += d;
+            });
+            res.on('end', () => {
+              req.destroy();
+              resolve({ status: res.statusCode ?? 0, sentBytes: sent, body });
+            });
+          },
+        );
+        req.on('error', (err) => {
+          // The server cuts the socket after its bounded drain — fine once answered.
+          if (!answered) reject(err);
+        });
+        const pump = (): void => {
+          // Never call end(): a buffer-then-check reader would hang forever.
+          while (!answered && sent < limit) {
+            sent += chunk.length;
+            if (!req.write(chunk)) {
+              req.once('drain', pump);
+              return;
+            }
+          }
+        };
+        req.write('{"text":"');
+        pump();
+      },
+    );
+    expect(result.status).toBe(413);
+    expect((JSON.parse(result.body) as { ok: boolean }).ok).toBe(false);
+    expect(hd.relayCalls).toHaveLength(0);
+    expect(hd.db.prepare('SELECT COUNT(*) AS n FROM hook_messages').get()).toEqual({ n: 0 });
+  });
+
+  it('400 on bad JSON / content-type / text / source / messageId / wait', async () => {
     const hd = await startDirect();
     h = hd;
     const post = async (opts: Parameters<typeof call>[2]): Promise<HookResponse> => {
       hd.advance(60_000); // refill the POST bucket between probes
       return call(hd.base, '/hook/v1/messages', opts);
     };
-    const big = await post({ body: { text: 'a'.repeat(7000), pad: 'b'.repeat(10 * 1024) } });
-    expect(big.status).toBe(413);
-    expect(big.body.ok).toBe(false);
 
     const cases: Array<[string, Parameters<typeof call>[2]]> = [
       ['bad JSON', { rawBody: '{"text": ' }],
