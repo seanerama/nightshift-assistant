@@ -96,6 +96,14 @@ export function makeConfig(overrides: Partial<Config> = {}): Config {
     appBind: ['127.0.0.1'],
     appPort: 0, // ephemeral
     generativeUiEnabled: false, // Stage 31 ships dark; generative-ui tests flip it on
+    hookIngressEnabled: false, // Stage 39 ships dark; hook tests flip it on
+    hookToken: '',
+    hookDefaultWaitSec: 25,
+    hookMaxWaitSec: 55,
+    hookRatePerMin: 6,
+    hookPollRatePerMin: 60,
+    hookMaxPending: 3,
+    hookRetentionDays: 7,
     ...overrides,
   };
 }

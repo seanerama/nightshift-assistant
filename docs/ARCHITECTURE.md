@@ -20,7 +20,7 @@ systemd on the dev server (ADR 0003), state in one SQLite file with a migration 
 ```
                        Webex cloud
                             │  (webhook POST, HMAC-verified)
-                 cloudflared tunnel — /webhook ONLY
+        Tailscale Funnel — path scopes /webhook (+ /hook/v1)
                             │
 ┌───────────────────────────┴─────────────────────────────┐
 │  nightshift-core (systemd service, loopback bind)        │
@@ -54,10 +54,58 @@ Module seams are the three frozen contracts:
 | `assistant-session` | transport ⇄ session manager: relay(), rotation ritual, file layout |
 | `job-lifecycle` | session manager ⇄ job runner: JobRecord, guarded state machine, completion sentinel, reconciliation |
 
+## Transport: the front doors
+
+Every door converts its wire format into the same frozen `InboundMessage`, awaits
+`relay()` (`contracts/assistant-session.md`) itself, and owns delivery of its own
+reply. All turns — whatever the door — queue on the ONE serialized relay chain and
+land in the one shared conversational session. Ingress originally ran over a
+cloudflared tunnel; ADR 0006 moved it to Tailscale Funnel **path scopes** — the
+port is never Funneled wholesale.
+
+| Door | Routes | Credential | Exposure | Contract |
+|---|---|---|---|---|
+| Webex | `POST /webhook` (+ loopback `GET /health`) | Webex HMAC signature + fetched-sender = owner | Funnel scope `/webhook` (ADR 0006) | `webex-ingress` |
+| Control API | `/api/v1/*` | `NIGHTSHIFT_API_TOKEN` | loopback only — never Funneled | `control-api` |
+| App transport | `/app/v1/*` (own server, port 3778) | `NIGHTSHIFT_APP_TOKEN` | loopback + tailnet IP only, never Funneled (ADR 0011) | `app-ingress` |
+| **Hook ingress** | `POST /hook/v1/messages`, `GET /hook/v1/messages/<id>` | `NIGHTSHIFT_HOOK_TOKEN` | Funnel scope `/hook/v1` only (ADR 0018) | `hook-ingress` |
+
+**Hook ingress — the third (public) chat door** (Stage 39, ADR 0018). A chat-only route
+family on the daemon's existing loopback server for owner callers that are not on the
+tailnet (curl, Shortcuts, Zapier/n8n). Dark by default: unless
+`HOOK_INGRESS_ENABLED=true` the handler is never mounted and `/hook/v1/*` is the
+server's plain 404, indistinguishable from any unknown path. Text in, text out: no
+uploads, no file serving (reply files are only *counted* as `filesOmitted`), no MCP, no
+job/UI endpoints. The reply goes to the caller only — synchronously when the turn
+finishes inside a bounded wait (`HOOK_DEFAULT_WAIT_SEC`/`HOOK_MAX_WAIT_SEC`), otherwise
+202 + a poll path backed by the durable `hook_messages` table (which is also the
+idempotency record). Nothing is mirrored to Webex or the app outbox.
+
+- **Trust level: owner-equivalent.** The hook token *is* the owner's password: a hook
+  turn has the same power as the owner messaging the bot (including asking it to run
+  jobs on the host). The daemon tags each turn `[via hook: <source>]` so the assistant
+  knows its origin — a label, not a restriction. A leaked token is owner-equivalent
+  compromise until it is rotated (one `.env` edit + restart; independent of the app and
+  API tokens).
+- **Fail closed, not enumerable.** Bearer auth with a constant-time compare (one shared
+  helper, `src/transport/auth.ts`) runs before routing, so 401 precedes every
+  404/405/400/413; flag on with the token unset ⇒ every hook route 401s and the daemon
+  logs one startup error but keeps running.
+- **Bounded.** Authenticated requests only are rate limited (POST token bucket
+  `HOOK_RATE_PER_MIN`, burst 3; poll bucket `HOOK_POLL_RATE_PER_MIN`), and at most
+  `HOOK_MAX_PENDING` hook turns may be pending — the relay queue is shared, so a flood
+  must not stall the owner's Webex/app turns. Body ≤ 16 KiB, text ≤ 8000 chars.
+- **Exposure is exactly one Funnel path scope**, `/hook/v1` → `127.0.0.1:3777/hook/v1`
+  (provisioned in stage 40). `/api/v1/*`, `/app/v1/*` and `/health` must keep 404ing at
+  the Funnel edge — verified by `docs/smoke/hook-ingress.md`.
+- Logs carry messageId, source, status, latency and HTTP code only — never the token,
+  the turn text, or the reply.
+
 ## Key design commitments
 
 - **Fail-closed security** at the webhook (HMAC, fetched-sender auth, dedup); loopback
-  bind; only `/webhook` tunneled. Workers get a default-deny env allow-list — infra
+  bind; only Funnel path scopes are public (`/webhook`, and `/hook/v1` when the hook
+  ingress is enabled — ADR 0018). Workers get a default-deny env allow-list — infra
   credentials never reach spawned sessions. Pre-push secret scan before any public
   GitHub push (capability-level, carried from the remediation plan).
 - **State can't lie:** guarded transitions (terminal states are final), PID

@@ -31,6 +31,7 @@ import { createAppMcp, createUiNotifyHub } from './transport/app/mcp.js';
 import { createAppOutbox } from './transport/app/outbox.js';
 import { type AppTransport, createAppTransport } from './transport/app/server.js';
 import { createDeliverer } from './transport/deliver.js';
+import { createHookHandler, type HookHandler, reconcileHookMessages } from './transport/hook.js';
 import { createRemarkablePusher } from './transport/remarkable.js';
 import { AttachmentError, createSender } from './transport/send.js';
 import { createTransportServer } from './transport/server.js';
@@ -247,6 +248,31 @@ export function createApp(
   // dark there are simply zero listeners, which is the spec's normal case.
   const uiNotify = createUiNotifyHub(log);
 
+  // Hook ingress (Stage 39, contracts/hook-ingress.md, ADR 0018): the public
+  // chat-only door, mounted on the loopback server below. Flag off ⇒ never
+  // constructed ⇒ /hook/v1/* is the ordinary 404 and hook_messages is
+  // untouched. Flag on with the token unset ⇒ still mounted but refuses
+  // EVERY request (401 — tokenMatches fails closed on an empty token), with
+  // one startup error; the daemon runs normally. Boot reconciliation first:
+  // a pending row from a previous daemon life can never finish.
+  let hook: HookHandler | undefined;
+  if (config.hookIngressEnabled) {
+    if (config.hookToken === '') {
+      log.error(
+        'hook ingress refusing all requests: HOOK_INGRESS_ENABLED=true but NIGHTSHIFT_HOOK_TOKEN is unset — ' +
+          'every /hook/v1 route answers 401; the rest of the daemon runs normally',
+      );
+    }
+    try {
+      reconcileHookMessages(db, log);
+    } catch (err) {
+      log.error('startup hook reconcile failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    hook = createHookHandler({ config, log, db, relay: (msg) => sessions.relay(msg) });
+  }
+
   const server = createTransportServer({
     config,
     log,
@@ -309,6 +335,7 @@ export function createApp(
       onUiMutate: () => uiNotify.notifyResourcesChanged(),
       version: appVersion(),
     }),
+    ...(hook === undefined ? {} : { hook }),
   });
 
   // App transport (Stages 24+26, contracts/app-ingress.md): its own node:http

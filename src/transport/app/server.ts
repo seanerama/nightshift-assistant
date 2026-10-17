@@ -46,12 +46,12 @@
  * contract already names, not a new route shape).
  */
 
-import { createHash, timingSafeEqual } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { Config } from '../../config.js';
 import type { Logger } from '../../log.js';
 import type { AssistantReply, InboundMessage } from '../../types.js';
+import { tokenMatches } from '../auth.js';
 import { readRawBody, respond } from '../server.js';
 import type { AppFiles } from './files.js';
 import type { AppMcp, UiNotifyHub } from './mcp.js';
@@ -105,22 +105,6 @@ export interface AppTransport {
   /** Bound port after listen() (null before). */
   port(): number | null;
   close(): Promise<void>;
-}
-
-/**
- * Constant-time bearer check — the same discipline as the control API
- * (src/transport/api.ts): both sides hashed to fixed length so timingSafeEqual
- * applies and neither content nor length of the expected token leaks. Empty
- * expected token → fail closed, never compare (and app.ts refuses to start
- * the listener at all in that case).
- */
-function tokenMatches(header: string | undefined, expected: string): boolean {
-  if (expected === '') return false;
-  if (header === undefined || !header.startsWith('Bearer ')) return false;
-  const provided = header.slice('Bearer '.length);
-  const providedHash = createHash('sha256').update(provided, 'utf8').digest();
-  const expectedHash = createHash('sha256').update(expected, 'utf8').digest();
-  return timingSafeEqual(providedHash, expectedHash);
 }
 
 /** Every non-2xx body on this surface is the contract's single error shape (invariant 6). */

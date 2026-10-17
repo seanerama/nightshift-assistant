@@ -17,7 +17,6 @@
  * anything else → 500.
  */
 
-import { createHash, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Config } from '../config.js';
 import { JobError, type JobRunner } from '../jobs/runner.js';
@@ -27,6 +26,7 @@ import type { SessionManager } from '../session/manager.js';
 import type { JobStatus, JobSubmit } from '../types.js';
 import { type UiRegistry, UiRegistryError } from '../ui/registry.js';
 import type { UiState } from '../ui/state.js';
+import { tokenMatches } from './auth.js';
 import { DeliverError, type Deliverer } from './deliver.js';
 import { RemarkableError, type RemarkablePusher } from './remarkable.js';
 import { AttachmentError } from './send.js';
@@ -61,21 +61,6 @@ export interface ApiDeps {
 }
 
 export type ApiHandler = (req: IncomingMessage, res: ServerResponse) => void;
-
-/**
- * Constant-time bearer check. Both sides are hashed to fixed length first so
- * timingSafeEqual is applicable (it requires equal lengths) and the comparison
- * leaks neither content nor length of the expected token. Empty expected
- * token → fail closed, never compare.
- */
-function tokenMatches(header: string | undefined, expected: string): boolean {
-  if (expected === '') return false;
-  if (header === undefined || !header.startsWith('Bearer ')) return false;
-  const provided = header.slice('Bearer '.length);
-  const providedHash = createHash('sha256').update(provided, 'utf8').digest();
-  const expectedHash = createHash('sha256').update(expected, 'utf8').digest();
-  return timingSafeEqual(providedHash, expectedHash);
-}
 
 export function createApiHandler(deps: ApiDeps): ApiHandler {
   const {
