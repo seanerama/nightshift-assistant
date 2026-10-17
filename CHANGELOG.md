@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.16.0
+
+### Other
+- [stage 39] Hook ingress: public chat door /hook/v1 with dedicated token, sync-or-poll replies, rate limit (dark) (#90)
+- plan: stages 39-40 intake — hook ingress public chat door (ADR 0018, contracts/hook-ingress.md v1)
+- architect: freeze contracts/memory-graph.md v1 — extraction settled as a dedicated second turn (ADR 0017); no backfill (blueprint discipline)
+- ops: v0.15.0 live — state store + authoring fidelity deployed, verified, session rotated; owner smoke 2'+3 pending
+- release: v0.15.0 changelog — ui-state store (stage 37) + authoring fidelity (stage 38)
+
 ## 0.15.0
 
 ### Other
