@@ -389,4 +389,68 @@ describe('loadConfig', () => {
       /NIGHTSHIFT_APP_PORT/,
     );
   });
+  it('hook ingress (Stage 39): dark by default, flag discipline, token NOT startup-required, tunables bounded', () => {
+    const dark = loadConfig({ ...FULL_ENV });
+    expect(dark.hookIngressEnabled).toBe(false);
+    expect(dark.hookToken).toBe('');
+    // contracts/hook-ingress.md defaults.
+    expect(dark.hookDefaultWaitSec).toBe(25);
+    expect(dark.hookMaxWaitSec).toBe(55);
+    expect(dark.hookRatePerMin).toBe(6);
+    expect(dark.hookPollRatePerMin).toBe(60);
+    expect(dark.hookMaxPending).toBe(3);
+    expect(dark.hookRetentionDays).toBe(7);
+    for (const raw of ['yes', '1', 'TRUE']) {
+      expect(() => loadConfig({ ...FULL_ENV, HOOK_INGRESS_ENABLED: raw })).toThrow(
+        /HOOK_INGRESS_ENABLED/,
+      );
+    }
+    expect(loadConfig({ ...FULL_ENV, HOOK_INGRESS_ENABLED: 'false' }).hookIngressEnabled).toBe(
+      false,
+    );
+    // Flag on with the token UNSET loads fine — app.ts fails the routes closed.
+    const on = loadConfig({ ...FULL_ENV, HOOK_INGRESS_ENABLED: 'true' });
+    expect(on.hookIngressEnabled).toBe(true);
+    expect(on.hookToken).toBe('');
+    expect(
+      loadConfig({ ...FULL_ENV, HOOK_INGRESS_ENABLED: 'true', NIGHTSHIFT_HOOK_TOKEN: 'tok' })
+        .hookToken,
+    ).toBe('tok');
+
+    const tuned = loadConfig({
+      ...FULL_ENV,
+      HOOK_MAX_WAIT_SEC: '120',
+      HOOK_DEFAULT_WAIT_SEC: '0',
+      HOOK_RATE_PER_MIN: '12',
+      HOOK_POLL_RATE_PER_MIN: '30',
+      HOOK_MAX_PENDING: '5',
+      HOOK_RETENTION_DAYS: '30',
+    });
+    expect(tuned.hookMaxWaitSec).toBe(120);
+    expect(tuned.hookDefaultWaitSec).toBe(0);
+    expect(tuned.hookRatePerMin).toBe(12);
+    expect(tuned.hookPollRatePerMin).toBe(30);
+    expect(tuned.hookMaxPending).toBe(5);
+    expect(tuned.hookRetentionDays).toBe(30);
+
+    const bad: Array<[string, string]> = [
+      ['HOOK_MAX_WAIT_SEC', '121'],
+      ['HOOK_MAX_WAIT_SEC', '-1'],
+      ['HOOK_MAX_WAIT_SEC', 'nope'],
+      ['HOOK_DEFAULT_WAIT_SEC', '56'], // above the (default 55) max
+      ['HOOK_DEFAULT_WAIT_SEC', '-1'],
+      ['HOOK_RATE_PER_MIN', '0'],
+      ['HOOK_POLL_RATE_PER_MIN', '0'],
+      ['HOOK_MAX_PENDING', '0'],
+      ['HOOK_RETENTION_DAYS', '0'],
+    ];
+    for (const [name, value] of bad) {
+      expect(() => loadConfig({ ...FULL_ENV, [name]: value }), `${name}=${value}`).toThrow(
+        new RegExp(name),
+      );
+    }
+    expect(() =>
+      loadConfig({ ...FULL_ENV, HOOK_MAX_WAIT_SEC: '10', HOOK_DEFAULT_WAIT_SEC: '11' }),
+    ).toThrow(/HOOK_DEFAULT_WAIT_SEC/);
+  });
 });

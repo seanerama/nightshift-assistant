@@ -198,6 +198,33 @@ export interface Config {
    * resources/list carries no registry rows (byte-identical to Stage 28).
    */
   generativeUiEnabled: boolean;
+  /**
+   * Master switch for the hook ingress (Stage 39, contracts/hook-ingress.md,
+   * ADR 0018). Default OFF — with it unset, the /hook/v1/ handler is never
+   * mounted and every /hook/v1/* path is the server's ordinary 404 (absent,
+   * indistinguishable from any unknown path).
+   */
+  hookIngressEnabled: boolean;
+  /**
+   * Bearer token required on every /hook/v1/ request — owner-equivalent (a
+   * password), DISTINCT from NIGHTSHIFT_API_TOKEN and NIGHTSHIFT_APP_TOKEN so
+   * it rotates independently. Deliberately NOT validated here: flag on with
+   * the token unset must leave the daemon healthy while every hook route
+   * refuses (401) — that fail-closed check + startup error log live in app.ts.
+   */
+  hookToken: string;
+  /** Default synchronous wait for POST /hook/v1/messages (0..hookMaxWaitSec). */
+  hookDefaultWaitSec: number;
+  /** Upper bound on a caller's `wait` (0..120 — bounded HTTP occupancy). */
+  hookMaxWaitSec: number;
+  /** POST token-bucket refill rate per minute (burst 3, fixed by contract). */
+  hookRatePerMin: number;
+  /** GET (poll) token-bucket refill rate per minute. */
+  hookPollRatePerMin: number;
+  /** POST ⇒ 429 while this many hook turns are pending. */
+  hookMaxPending: number;
+  /** completed/failed hook_messages rows older than this are pruned on insert. */
+  hookRetentionDays: number;
 }
 
 export class ConfigError extends Error {}
@@ -541,6 +568,64 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   }
   const generativeUiEnabled = generativeUiRaw === 'true';
 
+  // Hook-ingress kill-switch (Stage 39): same discipline as the other feature
+  // flags — only exactly "true" enables; "false"/unset stay dark; anything
+  // else fails fast.
+  const hookRaw = env.HOOK_INGRESS_ENABLED;
+  if (hookRaw !== undefined && hookRaw !== '' && hookRaw !== 'true' && hookRaw !== 'false') {
+    throw new ConfigError(`HOOK_INGRESS_ENABLED must be "true" or "false" (got: ${hookRaw})`);
+  }
+  const hookIngressEnabled = hookRaw === 'true';
+
+  // NOT required-when-enabled on purpose (same as NIGHTSHIFT_APP_TOKEN): flag
+  // on + token unset refuses every hook route (401) with the daemon otherwise
+  // healthy. app.ts owns that fail-closed check and its startup error log.
+  const hookToken = env.NIGHTSHIFT_HOOK_TOKEN ?? '';
+
+  // Hook tunables (contracts/hook-ingress.md defaults). The max wait is
+  // bounded at 120s — a synchronous wait occupies an HTTP connection behind
+  // the serialized relay queue; poll is the real delivery guarantee.
+  const hookMaxWaitSec = Number.parseInt(env.HOOK_MAX_WAIT_SEC ?? '55', 10);
+  if (!Number.isInteger(hookMaxWaitSec) || hookMaxWaitSec < 0 || hookMaxWaitSec > 120) {
+    throw new ConfigError(
+      `HOOK_MAX_WAIT_SEC is not a valid integer (0-120): ${env.HOOK_MAX_WAIT_SEC}`,
+    );
+  }
+  const hookDefaultWaitSec = Number.parseInt(env.HOOK_DEFAULT_WAIT_SEC ?? '25', 10);
+  if (
+    !Number.isInteger(hookDefaultWaitSec) ||
+    hookDefaultWaitSec < 0 ||
+    hookDefaultWaitSec > hookMaxWaitSec
+  ) {
+    throw new ConfigError(
+      `HOOK_DEFAULT_WAIT_SEC is not a valid integer (0-HOOK_MAX_WAIT_SEC=${hookMaxWaitSec}): ${env.HOOK_DEFAULT_WAIT_SEC}`,
+    );
+  }
+  const hookRatePerMin = Number.parseInt(env.HOOK_RATE_PER_MIN ?? '6', 10);
+  if (!Number.isInteger(hookRatePerMin) || hookRatePerMin < 1 || hookRatePerMin > 600) {
+    throw new ConfigError(
+      `HOOK_RATE_PER_MIN is not a valid integer (1-600): ${env.HOOK_RATE_PER_MIN}`,
+    );
+  }
+  const hookPollRatePerMin = Number.parseInt(env.HOOK_POLL_RATE_PER_MIN ?? '60', 10);
+  if (!Number.isInteger(hookPollRatePerMin) || hookPollRatePerMin < 1 || hookPollRatePerMin > 600) {
+    throw new ConfigError(
+      `HOOK_POLL_RATE_PER_MIN is not a valid integer (1-600): ${env.HOOK_POLL_RATE_PER_MIN}`,
+    );
+  }
+  const hookMaxPending = Number.parseInt(env.HOOK_MAX_PENDING ?? '3', 10);
+  if (!Number.isInteger(hookMaxPending) || hookMaxPending < 1 || hookMaxPending > 100) {
+    throw new ConfigError(
+      `HOOK_MAX_PENDING is not a valid integer (1-100): ${env.HOOK_MAX_PENDING}`,
+    );
+  }
+  const hookRetentionDays = Number.parseInt(env.HOOK_RETENTION_DAYS ?? '7', 10);
+  if (!Number.isInteger(hookRetentionDays) || hookRetentionDays < 1 || hookRetentionDays > 3650) {
+    throw new ConfigError(
+      `HOOK_RETENTION_DAYS is not a valid integer (1-3650): ${env.HOOK_RETENTION_DAYS}`,
+    );
+  }
+
   return {
     webexBotToken,
     webexWebhookSecret,
@@ -576,5 +661,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     appBind,
     appPort,
     generativeUiEnabled,
+    hookIngressEnabled,
+    hookToken,
+    hookDefaultWaitSec,
+    hookMaxWaitSec,
+    hookRatePerMin,
+    hookPollRatePerMin,
+    hookMaxPending,
+    hookRetentionDays,
   };
 }

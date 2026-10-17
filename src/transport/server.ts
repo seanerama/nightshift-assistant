@@ -2,7 +2,9 @@
  * Transport (contracts/webex-ingress.md): POST /webhook with the full fail-closed
  * verification chain, GET /health. The webhook handler acks 200 fast and does all
  * real work off the request path. The daemon binds 127.0.0.1 ONLY (ADR 0001) —
- * exposure is via the cloudflared tunnel to /webhook and nothing else.
+ * public exposure is Tailscale Funnel path scopes (ADR 0006, amended by ADR
+ * 0018): /webhook, plus /hook/v1 once the hook ingress is enabled. /api/v1 and
+ * /health are never Funneled.
  */
 
 import { createHmac, timingSafeEqual } from 'node:crypto';
@@ -33,6 +35,13 @@ export interface TransportDeps {
    * loopback-only bind is inherited. Owns its own kill-switch/auth/404s.
    */
   api?(req: IncomingMessage, res: ServerResponse): void;
+  /**
+   * Handler for /hook/v1/* (contracts/hook-ingress.md, Stage 39) — injected
+   * ONLY when HOOK_INGRESS_ENABLED=true; absent ⇒ those paths fall through to
+   * the plain 404 below, indistinguishable from any unknown path. Owns its
+   * own auth (401 first), rate limit, 404/405s, and never rejects.
+   */
+  hook?(req: IncomingMessage, res: ServerResponse): Promise<void>;
 }
 
 interface WebhookBody {
@@ -84,7 +93,7 @@ export function respond(res: ServerResponse, status: number, body: Record<string
 }
 
 export function createTransportServer(deps: TransportDeps): Server {
-  const { config, log, webex, sender, relay, onOwnerRoom, version, api } = deps;
+  const { config, log, webex, sender, relay, onOwnerRoom, version, api, hook } = deps;
   const dedup = new MessageDedup();
   const startedAt = Date.now();
 
@@ -225,6 +234,12 @@ export function createTransportServer(deps: TransportDeps): Server {
     }
     if (api !== undefined && url?.startsWith('/api/v1/') === true) {
       api(req, res);
+      return;
+    }
+    // The bare prefix routes to the hook too, so it 401s like every other
+    // /hook/v1 path instead of leaking "this prefix is special" via a 404.
+    if (hook !== undefined && (url === '/hook/v1' || url?.startsWith('/hook/v1/') === true)) {
+      void hook(req, res);
       return;
     }
     if (req.method === 'POST' && url === '/webhook') {
