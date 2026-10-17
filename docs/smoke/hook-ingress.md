@@ -139,8 +139,8 @@ On the host, from the app directory (the token is fed to grep via a file
 descriptor, never as an argument visible in `ps`):
 
 ```sh
-journalctl -u nightshift --since '15 min ago' | grep -cFf <(sed -n 's/^NIGHTSHIFT_HOOK_TOKEN=//p' .env)
-journalctl -u nightshift --since '15 min ago' | grep -c 'hook-smoke-ok'
+journalctl --user -u nightshift-assistant --since '15 min ago' | grep -cFf <(sed -n 's/^NIGHTSHIFT_HOOK_TOKEN=//p' .env)
+journalctl --user -u nightshift-assistant --since '15 min ago' | grep -c 'hook-smoke-ok'
 ```
 
 **Expect:** `0` and `0` — the token, the turn text and the reply text never
@@ -149,3 +149,30 @@ code only). Then `unset HOOK_TOKEN` on the off-tailnet machine.
 
 Record the date, the Funnel hostname (not the token), each step's HTTP codes,
 and the step-2 wall time in STATUS.md / `.verity/deploy-access.md`.
+
+## Results — v0.16.0, 2026-10-17 (stage 40)
+
+Host `3090-tuf`; Funnel hostname `3090-tuf.taile0ffc4.ts.net`. Off-tailnet path
+from the operator workstation: the name forced to the public ingress answer
+(`208.111.34.11`, from Cloudflare DoH) with `curl --resolve`, since on-tailnet
+resolution (`100.110.222.42`) bypasses the edge.
+
+| Step | Where | Result |
+|---|---|---|
+| 0 flag-off absence | loopback, dark deploy | `/hook/v1/messages` 404; schema 11; `/health` 200, `/api/v1/status` ok, app manifest 200, public `/webhook` 401 unsigned |
+| 1 401 every path | edge | `/hook/v1/messages`, `/messages/<id>`, `/hook/v1/nope`: 401 no token, 401 wrong token |
+| 2 200 sync | loopback | `PONG`, 200, 5.2 s wall (after the host re-auth below) |
+| 2 200 sync | **edge**, authenticated | 200 `completed`, 6,149-char reply, **27.5 s** wall with `wait:55` (Funnel held the connection ≥ 27.5 s; full 55 s not exercised) |
+| 3 202 + poll | loopback | `wait:0` → 202 + poll path; GET → `completed` |
+| 4 idempotent re-POST | loopback | same `messageId` → stored state, no new turn |
+| 5 429 | loopback | 4th POST in the burst → 429, `Retry-After: 4` |
+| 6 nothing else exposed | edge | `/api/v1/status`, `/app/v1/health`, `/app/v1/manifest`, `/health`, `/`, `/hook`, `/hookv1`: all 404 |
+| 7 Webex round-trip | — | **PENDING OWNER** (only the owner can message the bot) |
+| 8 log hygiene | host journal | token 0, turn/reply text 0; 401 warn lines present (12 from probes; see issue #92) |
+
+Incident during the run: the host Claude CLI lost its login at the first hook
+turn (credentials rewritten 04:05:26Z, same pattern as 2026-09-08), which wedged
+pending session `1b262322` ("Session ID … already in use"). Owner re-logged in;
+operator closed session row 51 (`died`, DB backup
+`nightshift-20261017-041049-pre-unwedge.db`) and the next turn started session
+52 cleanly. Hook mechanics were unaffected.
