@@ -185,3 +185,17 @@ The hook moved from `:443/hook/v1` to its own Funnel port,
 200 `PONG10000`. `:10000` `/api/v1/status`, `/app/v1/health`, `/health`,
 `/webhook` and `/` all return 404. Old `:443/hook/v1` returns 404. `:443/webhook`
 still returns 401 when unsigned. For future runs, set `BASE=https://3090-tuf.taile0ffc4.ts.net:10000`.
+
+### Back to 443 — 2026-10-17
+
+The assistant's network only allows outbound 443, so the hook moved back to
+`https://3090-tuf.taile0ffc4.ts.net/hook/v1`, and the port 10000 Funnel was
+turned off. Re-verified at the public edge:
+- `/hook/v1/messages` with no token returns 401.
+- GET of an unknown id with the token returns 404.
+- An authenticated sync request returned 200 `PONG443`.
+- `/api/v1/status`, `/app/v1/health`, `/health` and `/hook` all return 404.
+- `/webhook` still returns 401 when unsigned.
+- `:10000` is unreachable.
+
+Tailscale 1.102.3.

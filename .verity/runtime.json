@@ -6,7 +6,7 @@
     "prod": {
       "tag": "v0.16.0",
       "host": "dev server (nsaf-dev-server / 3090-tuf, user systemd)",
-      "webhook_url": "https://3090-tuf.taile0ffc4.ts.net/webhook (Webex, :443) + https://3090-tuf.taile0ffc4.ts.net:10000/hook/v1 (hook ingress, ADR 0018 am.1)",
+      "webhook_url": "https://3090-tuf.taile0ffc4.ts.net/webhook (Webex) + https://3090-tuf.taile0ffc4.ts.net/hook/v1 (hook ingress, ADR 0018)",
       "rotation": "enabled (NIGHTSHIFT_ROTATION_ENABLED=true); stage-2 smoke passed 2026-07-06",
       "jobs": "enabled (NIGHTSHIFT_JOBS_ENABLED=true); stage-4 smoke passed 2026-07-06 (succeed + reconcile-adopt + kill + Webex notices)",
       "remarkable": "PUSH enabled (NIGHTSHIFT_REMARKABLE_ENABLED=true, NIGHTSHIFT_REMARKABLE_FOLDER=/NS-Inbox, RMAPI_BIN=~/.local/bin/rmapi); stage-19 smoke passed 2026-07-25. INBOX live: note-ingest job type (stage 20) consumes notes the reMarkable /Outbound watcher submits — verified end-to-end 2026-07-25 (handwritten note → watcher → note-ingest worker → composed doc → /NS-Inbox).",
@@ -15,7 +15,7 @@
       "verified": "2026-07-25 19:42Z: v0.12.2 deployed, ACTIVE; URL HANDLING line confirmed in dist; session rotated 51292b5e→de76f23a; seed audited — stale paste-belief confined to 2026-07-25.md (not seed material; latest is -2 stub + operator note). Webex smoke (docs/smoke/stage-23.md steps 2–4) PENDING OWNER — only the owner can message the bot",
       "commit": "15a63ae",
       "generative_ui": "v0.15.0 live 2026-07-28: ui-state store + authoring fidelity — schema 10, 7-tool catalog verified, CLI-seeded state read via ui_state_get MCP call, session rotated (c01cc192, stage-38 preamble); harness 22/23 warm (files.roundtrip = known flake); owner smoke 2'+3 pending (state-holding tracker + grant conversation)",
-      "hook_ingress": "v0.16.0 2026-10-17: LIVE + PUBLIC at https://3090-tuf.taile0ffc4.ts.net:10000/hook/v1 (own Funnel port 10000 -> 127.0.0.1:3777/hook/v1; moved off 443 by owner decision; HOOK_INGRESS_ENABLED=true). Edge-verified off-tailnet: 401 all hook paths, authenticated 200 sync replies, /api/v1 /app/v1 /health /webhook 404 on :10000. Rollback: tailscale funnel --https=10000 off. Webex round-trip smoke (step 7) PENDING OWNER. See docs/smoke/hook-ingress.md."
+      "hook_ingress": "v0.16.0 2026-10-17: LIVE + PUBLIC at https://3090-tuf.taile0ffc4.ts.net/hook/v1 (Funnel 443 path scope -> 127.0.0.1:3777/hook/v1; briefly on :10000, moved back because the assistant's network allows only outbound 443; :10000 OFF). Edge-verified off-tailnet: 401 unauth, authenticated 200 sync, /api/v1 /app/v1 /health 404. Rollback: tailscale funnel --set-path /hook/v1 off (NEVER --https=443 off). Webex round-trip smoke (step 7) PENDING OWNER. See docs/smoke/hook-ingress.md."
     }
   },
   "secret_locations": [

@@ -87,3 +87,13 @@ without any risk to the Webex webhooks on 443. Funnel only permits ports 443,
 8443 and 10000. On this host, 8443 is a tailnet-only serve of an unrelated app
 and must not be Funneled. The contract is unchanged: it fixes the path, not the
 public port.
+
+## Amendment 2 (2026-10-17, same day): back to port 443
+
+Amendment 1 is reversed. The owner's AI assistant runs on a network that only
+allows outbound 443; Funnel ports 10000 and 8443 time out from there. `/hook/v1`
+is served on 443 again, next to `/webhook`
+(`https://3090-tuf.taile0ffc4.ts.net/hook/v1`), and port 10000 is turned off. The
+hook can still be rolled back alone with `tailscale funnel --set-path /hook/v1 off`.
+The thing to avoid is the port-wide `--https=443 off`, which also takes down the
+Webex webhooks. The path scope and target are unchanged. The contract is unchanged.
